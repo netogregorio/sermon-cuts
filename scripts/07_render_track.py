@@ -294,6 +294,7 @@ def render_cut_singlepass(
     seg_end: float,
     out_video: Path,
     srt: Path | None = None,
+    quality: str = "auto",
 ) -> None:
     """Render a vertical cut in ONE ffmpeg pass.
 
@@ -353,7 +354,7 @@ def render_cut_singlepass(
         # isn't read as a filter separator.
         vf_args = ["-vf", f"subtitles={srt}:force_style='{style_esc}'"]
 
-    encoder_args = pick_video_encoder(VID)
+    encoder_args = pick_video_encoder(VID, quality=quality)
 
     cmd = [
         FFMPEG,
@@ -461,6 +462,17 @@ def main() -> None:
             "useful when cutting for multiple brands from one install."
         ),
     )
+    ap.add_argument(
+        "--quality",
+        choices=["auto", "max"],
+        default="auto",
+        help=(
+            "encoder quality. 'auto' (default) picks h264_videotoolbox on "
+            "Apple Silicon for speed, libx264 elsewhere. 'max' forces "
+            "libx264 -preset slower -crf 17 — slower but a bit higher "
+            "visual fidelity. Use for delivery-grade cuts going to client."
+        ),
+    )
     args = ap.parse_args()
 
     msg_dir = MESSAGES / args.slug
@@ -494,8 +506,12 @@ def main() -> None:
                 hint=f"rode primeiro: ./scripts/06_build_srt.py {args.slug} {args.cut_index}",
             )
 
-    print(f"[render] cut #{n} '{slug}' {seg_start:.2f}-{seg_end:.2f}s", file=sys.stderr)
-    render_cut_singlepass(src, seg_start, seg_end, final, srt=srt)
+    print(
+        f"[render] cut #{n} '{slug}' {seg_start:.2f}-{seg_end:.2f}s "
+        f"(quality={args.quality})",
+        file=sys.stderr,
+    )
+    render_cut_singlepass(src, seg_start, seg_end, final, srt=srt, quality=args.quality)
 
     print(
         json.dumps(
