@@ -61,6 +61,34 @@ def is_forbidden_ending(text: str) -> bool:
     return norm in CFG["forbid_endings"]
 
 
+def is_forbidden_start(text: str) -> bool:
+    norm = text.strip(",.;:!? ").lower()
+    return norm in CFG.get("forbid_starts", [])
+
+
+def find_first_word(words: list[dict], t_start: float) -> dict | None:
+    """First word whose start is >= t_start. Mirrors find_last_word."""
+    for w in words:
+        if w.get("type") != "word" or w.get("start") is None:
+            continue
+        if w["start"] >= t_start:
+            return w
+    return None
+
+
+def find_word_before(words: list[dict], t: float) -> dict | None:
+    """Last word whose start is strictly before t — used to peek at what
+    the speaker was saying right before the cut starts."""
+    prev = None
+    for w in words:
+        if w.get("type") != "word" or w.get("start") is None:
+            continue
+        if w["start"] >= t:
+            break
+        prev = w
+    return prev
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("slug")
@@ -130,6 +158,36 @@ def main() -> None:
     if prev_cands:
         nearest_prior_candidate = max(prev_cands)
 
+    # Start-side checks (warn-only, never auto-move). Two signals that the
+    # cut likely begins mid-sentence:
+    #   (a) first word of the cut is a function word (mas / porque / então /
+    #       …) that opens a clause depending on prior context, OR
+    #   (b) the word immediately before the cut's start doesn't end on
+    #       sentence-terminating punctuation (.!?) — meaning the speaker
+    #       was mid-thought when the cut starts.
+    # Both are editorial fixes: re-prompt for a cut anchored to a sentence
+    # boundary. We flag them so the curator sees the problem before render.
+    first_word = find_first_word(words, orig_start)
+    first_text = (first_word.get("text") or "") if first_word else ""
+    prev_word = find_word_before(words, orig_start)
+    prev_text = (prev_word.get("text") or "") if prev_word else ""
+    prev_text_clean = prev_text.strip()
+    prev_ends_sentence = bool(prev_text_clean) and prev_text_clean[-1] in ".!?"
+
+    start_warnings: list[str] = []
+    if first_word and is_forbidden_start(first_text):
+        start_warnings.append(
+            f"primeira palavra '{first_text.strip()}' sugere início no meio "
+            f"de um raciocínio — re-anchore o start numa fronteira de sentença"
+        )
+    if prev_word and not prev_ends_sentence and not start_warnings:
+        # Only fire (b) when (a) didn't already — avoid double-flagging the
+        # same underlying problem.
+        start_warnings.append(
+            f"palavra anterior ao start ('{prev_text_clean}') não fecha sentença — "
+            f"o cut provavelmente começa no meio de uma frase"
+        )
+
     last_text_clean = (last_text or "").strip()
     ending_punct = (
         last_text_clean[-1] if last_text_clean and last_text_clean[-1] in ".!?,;:" else ""
@@ -160,7 +218,11 @@ def main() -> None:
         )
 
     result = {
-        "ok": not is_forbidden_ending(last_text) and not duration_warnings,
+        "ok": (
+            not is_forbidden_ending(last_text)
+            and not duration_warnings
+            and not start_warnings
+        ),
         "cut_index": args.cut_index,
         "target": args.target,
         "duration_ceiling_s": max_dur,
@@ -170,7 +232,10 @@ def main() -> None:
         "adjusted_end": adj_end,
         "duration_s": round(duration, 2),
         "duration_warnings": duration_warnings,
+        "start_warnings": start_warnings,
         "nearest_prior_vad_candidate": nearest_prior_candidate,
+        "first_word": (first_text or "").strip(),
+        "word_before_start": prev_text_clean,
         "last_word": last_text_clean,
         "ending_punctuation": ending_punct,
         "reason": reason,

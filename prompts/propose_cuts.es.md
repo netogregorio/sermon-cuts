@@ -22,9 +22,13 @@ Shorts o TikTok.
    sea solo transición y no debería proponerse.
 3. **Inicio/fin deben alinear con pausas del VAD.** Tome `start` de
    `candidate_cut_points` cerca del comienzo natural, y `end` de un
-   candidato ≥ el fin natural. Nunca divida en medio de palabra, en medio de pensamiento, o en
-   una conjunción como "porque", "mas", "que", "e", "para" — esas señalan que la
-   frase continúa.
+   candidato ≥ el fin natural. Nunca divida en medio de palabra, en medio
+   de pensamiento, o en una conjunción/preposición como "porque", "mas",
+   "então", "quando", "se", "para", "que", "e" — esas señalan que la
+   frase continúa. **La primera palabra del corte tampoco puede ser una
+   de esas** — indica que el corte empezó en medio de un razonamiento
+   previo. En su lugar, ancle `start` justo después de una pausa que
+   sigue a un `.!?` en el transcript.
 4. **Self-contained.** Un viewer por primera vez (sin contexto previo del
    sermón) debe entender el punto. Si el orador dice "como eu disse
    antes…" o "voltando ao versículo…", el corte necesita el antecedente.

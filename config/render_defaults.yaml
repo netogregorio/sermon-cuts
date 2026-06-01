@@ -62,6 +62,26 @@ cut_validation:
     - de
     - com
     - em
+    - então                            # "então..." sinaliza próxima sentença
+    - quando                           # "quando..." abre subordinada incompleta
+    - se                               # "se..." abre condicional incompleta
+  forbid_starts:                       # primeira palavra do cut em qualquer dessas → flag
+    # Indica que o cut começou no meio de uma sentença/raciocínio anterior.
+    # 05_validate_cut só ALERTA (não auto-move) — mover o start do cut
+    # invalida a curadoria deliberada do LLM/humano sobre onde a ideia começa.
+    # O fix é editorial: re-pedir o cut com start alinhado a uma fronteira de
+    # sentença completa.
+    - mas
+    - porque
+    - e
+    - que
+    - então
+    - quando
+    - se
+    - para
+    - ou
+    - como
+    - aí
   required_terminal_punct: ".!?"       # cue final ideal termina em uma dessas
 
 # Caminho do binário ffmpeg. null = usar o `ffmpeg` do PATH.

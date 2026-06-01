@@ -23,8 +23,11 @@ Shorts, or TikTok.
 3. **Start/end must align to VAD pauses.** Pick `start` from
    `candidate_cut_points` near the natural beginning, and `end` from a
    candidate ≥ the natural end. Never split mid-word, mid-thought, or on a
-   conjunction like "porque", "mas", "que", "e", "para" — those signal the
-   sentence continues.
+   conjunction/preposition like "porque", "mas", "então", "quando", "se",
+   "para", "que", "e" — those signal the sentence continues. **The cut's
+   first word can't be one of those either** — it means the cut began
+   mid-reasoning from prior context. Instead, anchor `start` right after
+   a pause that follows a `.!?` in the transcript.
 4. **Self-contained.** A first-time viewer (no prior context from the
    sermon) must understand the point. If the speaker says "como eu disse
    antes…" or "voltando ao versículo…", the cut needs the antecedent.
