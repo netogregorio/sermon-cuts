@@ -429,15 +429,35 @@ def render_cut_singlepass(
     total_frames = int(round((seg_end - seg_start) * OUT_FPS))
 
     # Build the filter graph. With an SRT we burn it on input 0; without,
-    # we pass the raw frames through unchanged.
-    vf_args: list[str] = []
+    # we pass the raw frames through unchanged. ``--quality max`` also
+    # inserts a light denoise + sharpen pass before the subtitles filter
+    # — useful on church-camera sources where high-ISO noise mushes the
+    # face and the upscale-to-1920 throws away some perceived sharpness.
+    vf_chain: list[str] = []
+    if quality == "max":
+        # hqdn3d: motion-aware spatial+temporal denoise. Numbers are
+        # luma-spatial, chroma-spatial, luma-temporal, chroma-temporal.
+        # 1.5/1.5/6/6 is light enough not to smear motion in talking
+        # heads but firm enough to kill the chroma fuzz that creeps in
+        # under stage lighting.
+        # unsharp: 5x5 kernel with 0.6 strength on luma — recovers the
+        # crispness lost in the Lanczos upscale without over-sharpening
+        # the subtitle outlines (which already have their own edges).
+        vf_chain.extend([
+            "hqdn3d=1.5:1.5:6:6",
+            "unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=0.6:"
+            "chroma_msize_x=5:chroma_msize_y=5:chroma_amount=0.0",
+        ])
     if srt is not None:
         # ffmpeg parses force_style as ASS key=value pairs separated by commas;
         # those commas need to be escaped inside the filter graph.
         style_esc = FORCE_STYLE.replace(",", r"\,")
-        # Single-quote the whole filter expression so the colon in ``subtitles=``
-        # isn't read as a filter separator.
-        vf_args = ["-vf", f"subtitles={srt}:force_style='{style_esc}'"]
+        vf_chain.append(f"subtitles={srt}:force_style='{style_esc}'")
+    # Single-quote the joined filter expression so the colon inside the
+    # subtitles filter isn't read as a filter separator.
+    vf_args: list[str] = []
+    if vf_chain:
+        vf_args = ["-vf", f"{','.join(vf_chain)}"]
 
     encoder_args = pick_video_encoder(VID, quality=quality, codec=codec)
 
