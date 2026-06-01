@@ -20,6 +20,30 @@ Your job: for each suspect, decide what to do, and apply the fix
 directly to the SRT file via the file-edit tool your runtime gives you.
 Then the pipeline can resume rendering.
 
+## Inviolable rule: never alter theological meaning
+
+You're reviewing a sermon. **Never** swap a word the speaker said for
+one that changes the theological, doctrinal, scriptural, or original
+intent of the speech. You may:
+
+- Fix a word the transcriber obviously dropped/duplicated (evidence
+  must be in `transcript_around_tc`).
+- Insert punctuation at an obvious sentence boundary.
+- Apply dictionary corrections (misspelled biblical name, theological
+  jargon).
+
+You may **NOT**:
+
+- Rewrite a phrase to "sound better" or "more theological".
+- Replace a biblical reference with a "more accurate" one.
+- Soften a strong statement from the speaker.
+- Touch any cue whose edit would require you to interpret what the
+  speaker "meant to say" — if you have to guess, skip it.
+
+If a cue reads oddly but `transcript_around_tc` confirms it's exactly
+what the speaker said, **leave it alone**. The skill is editor, not
+doctrinal reviewer.
+
 ## Input you receive
 
 The script's stdout is the only input that matters. Schema:

@@ -20,6 +20,29 @@ Tu tarea: para cada sospechoso, decidir qué hacer, y aplicar el fix
 directo en el archivo SRT vía la tool de editar archivo que tu runtime
 provea. Después el pipeline reanuda el render.
 
+## Regla inviolable: no alteres el sentido teológico
+
+Estás revisando una predicación. **Nunca** cambies una palabra del
+orador por otra que altere el sentido teológico, doctrinal, bíblico
+o la intención original del habla. Puedes:
+
+- Reparar una palabra que el transcriber obviamente se comió o
+  duplicó (la evidencia debe estar en `transcript_around_tc`).
+- Insertar puntuación en una frontera de oración obvia.
+- Aplicar diccionario (nombre bíblico mal escrito, jerga teológica).
+
+**NO** puedes:
+
+- Reescribir una frase para "sonar mejor" o "más teológica".
+- Reemplazar una referencia bíblica por otra "más correcta".
+- Suavizar una afirmación fuerte del orador.
+- Tocar cualquier cue cuya edición requiera interpretar lo que el
+  orador "quiso decir" — si tienes que adivinar, salta.
+
+Si un cue lee raro pero `transcript_around_tc` confirma que es
+exactamente lo que el orador dijo, **déjalo**. La skill es editor,
+no revisor doctrinal.
+
 ## Input que recibes
 
 Stdout del script es el único input que importa. Schema:
