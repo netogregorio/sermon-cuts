@@ -18,7 +18,14 @@ audio:
   target_lufs: -14.0   # padrão Insta/TikTok/Reels
 
 tracking:
-  sample_fps: 2.0       # detecções por segundo
+  # Detection sampling rate. 2 fps (old default) left ~500ms gaps between
+  # detections — a fast gesture or step could leave the crop visibly
+  # behind the preacher for that half-second. 5 fps closes those gaps:
+  # the smoothing window still hides individual sample jitter, but the
+  # tracking now reacts within ~200ms of any real movement.
+  # Cost: ~2-3s extra per cut on Apple Silicon (MediaPipe runs at hardware
+  # speed). Negligible compared to the visual gain.
+  sample_fps: 5.0
   smooth_window_s: 2.5  # janela de média móvel
   detector: mediapipe   # mediapipe | haar
   min_face_size: 80
