@@ -99,26 +99,35 @@ def resolve_ffmpeg(config_value: str | None = None) -> str:
 # ─── video encoder selection ──────────────────────────────────────────────
 
 
-def pick_video_encoder(config: dict, *, quality: str = "auto") -> list[str]:
+def pick_video_encoder(
+    config: dict, *, quality: str = "auto", codec: str = "h264"
+) -> list[str]:
     """Return the ffmpeg encoder argv chunk best suited to this machine.
 
-    Default (``quality="auto"``): on Apple Silicon prefer
-    ``h264_videotoolbox`` (hardware-accelerated, ~6-10× faster than libx264
-    ``preset=slow`` at near-indistinguishable quality for 1080p talking-head
+    Default (``quality="auto"``): on Apple Silicon prefer the hardware
+    encoder (``h264_videotoolbox`` or ``hevc_videotoolbox``, ~6-10× faster
+    than software at near-indistinguishable quality for 1080p talking-head
     content). Everywhere else, fall through to whatever the config says
     (typically libx264 CRF).
 
-    ``quality="max"``: force ``libx264 -preset slower -crf 17`` regardless
-    of platform and ignore ``VIDEO_ENCODER``. The hardware encoder is fast
-    but trades a few percent of visual fidelity for that speed; max mode
-    is for delivery cuts where the few extra minutes of encode time are
-    worth the slight quality bump. The pix_fmt stays at yuv420p so the
-    output remains broadly compatible with Reels/Shorts/TikTok ingest.
+    ``quality="max"``: force the software encoder regardless of platform
+    and ignore ``VIDEO_ENCODER``. Hardware encoders are fast but trade a
+    few percent of visual fidelity for that speed; max mode is for
+    delivery cuts where the few extra minutes of encode time are worth
+    the slight quality bump.
 
-    Override the default selection with ``VIDEO_ENCODER=libx264`` /
-    ``=h264_videotoolbox`` in the env — useful for benchmarking or when
-    ffmpeg lacks VideoToolbox. ``quality="max"`` takes precedence over
-    the env override.
+    ``codec="h264"`` (default): libx264 ``-preset slower -crf 17`` for max,
+    h264_videotoolbox for auto. Broadest ingest compatibility.
+
+    ``codec="hevc"``: libx265 ``-preset slower -crf 20`` for max,
+    hevc_videotoolbox for auto. ~40% smaller files at the same visible
+    quality, or noticeably crisper at the same bitrate. All target
+    platforms (Reels/TikTok/Shorts) accept HEVC ingest as of 2022+; use
+    it when delivering the master cut for a paying client.
+
+    Override the default codec selection with ``VIDEO_ENCODER=libx264`` /
+    ``=h264_videotoolbox`` / ``=libx265`` / ``=hevc_videotoolbox`` in the
+    env. ``quality="max"`` takes precedence over the env override.
 
     The function returns a list of ffmpeg arguments meant to splice straight
     into a Popen/run argv, e.g.::
@@ -129,9 +138,23 @@ def pick_video_encoder(config: dict, *, quality: str = "auto") -> list[str]:
     pix_fmt = config.get("pix_fmt", "yuv420p")
 
     if quality == "max":
-        # Delivery-grade software encode. CRF 17 is the practical floor for
-        # visually-transparent H.264 — anything lower trades file size for
-        # quality differences invisible at 1080p talking-head.
+        # Delivery-grade software encode. CRF threshold differs per codec
+        # because libx265's quality-vs-CRF curve is offset relative to
+        # libx264 — CRF 20 in x265 ≈ CRF 17 in x264 perceptually.
+        if codec == "hevc":
+            return [
+                "-c:v",
+                "libx265",
+                "-preset",
+                "slower",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                pix_fmt,
+                # hvc1 tag makes Apple QuickTime / Safari / Reels happy.
+                "-tag:v",
+                "hvc1",
+            ]
         return [
             "-c:v",
             "libx264",
@@ -147,28 +170,41 @@ def pick_video_encoder(config: dict, *, quality: str = "auto") -> list[str]:
     encoder = config.get("encoder", "libx264")
     if forced:
         encoder = forced
-    elif platform.system() == "Darwin" and platform.machine() == "arm64" and encoder == "libx264":
-        encoder = "h264_videotoolbox"
+    elif platform.system() == "Darwin" and platform.machine() == "arm64":
+        # Apple Silicon: pick the hardware encoder that matches the codec
+        # request. videotoolbox supports both H.264 and HEVC at hardware
+        # speed; the API surface is identical, only the codec tag changes.
+        if codec == "hevc" and encoder in ("libx264", "libx265"):
+            encoder = "hevc_videotoolbox"
+        elif encoder == "libx264":
+            encoder = "h264_videotoolbox"
 
-    if encoder == "h264_videotoolbox":
+    if encoder in ("h264_videotoolbox", "hevc_videotoolbox"):
         # Hardware encoder: tune via bitrate target instead of CRF.
-        # 8 Mbps is overkill for 1080p talking-head but file size is still
-        # small (~6-8 MB for 60s) and it leaves room for fast-cut B-roll
+        # 8 Mbps is overkill for 1080p H.264 talking-head; HEVC needs ~60%
+        # of that bitrate for equivalent quality, so we drop to 5M unless
+        # the user pins it. File size stays small (~3-8 MB for 60s) either
+        # way and the bitrate ceiling leaves room for fast-cut B-roll
         # without artifacting.
-        bitrate = os.environ.get("VIDEOTOOLBOX_BITRATE", "8M")
-        return [
+        default_bitrate = "5M" if encoder == "hevc_videotoolbox" else "8M"
+        bitrate = os.environ.get("VIDEOTOOLBOX_BITRATE", default_bitrate)
+        args = [
             "-c:v",
-            "h264_videotoolbox",
+            encoder,
             "-b:v",
             bitrate,
             "-pix_fmt",
             pix_fmt,
         ]
+        if encoder == "hevc_videotoolbox":
+            args.extend(["-tag:v", "hvc1"])
+        return args
 
-    # Software encoder (libx264): keep the preset/crf tunables from config.
+    # Software encoder (libx264 / libx265): keep the preset/crf tunables
+    # from config; honor an explicit libx265 override too.
     preset = config.get("preset", "slow")
     crf = str(config.get("crf", 18))
-    return [
+    args = [
         "-c:v",
         encoder,
         "-preset",
@@ -178,6 +214,9 @@ def pick_video_encoder(config: dict, *, quality: str = "auto") -> list[str]:
         "-pix_fmt",
         pix_fmt,
     ]
+    if encoder == "libx265":
+        args.extend(["-tag:v", "hvc1"])
+    return args
 
 
 # ─── user-visible data paths (sources / renders) ──────────────────────────

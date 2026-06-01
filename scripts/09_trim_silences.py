@@ -146,6 +146,12 @@ def main() -> None:
             "used, otherwise the trimmed output silently downgrades."
         ),
     )
+    ap.add_argument(
+        "--codec",
+        choices=["h264", "hevc"],
+        default="h264",
+        help="video codec for the re-encode pass; should match 07's --codec.",
+    )
     args = ap.parse_args()
 
     msg_dir = MESSAGES / args.slug
@@ -215,7 +221,7 @@ def main() -> None:
         "[vout]",
         "-map",
         "[aout]",
-        *pick_video_encoder(VID, quality=args.quality),
+        *pick_video_encoder(VID, quality=args.quality, codec=args.codec),
         "-color_range",
         "tv",
         "-colorspace",

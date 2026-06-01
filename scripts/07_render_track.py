@@ -295,6 +295,7 @@ def render_cut_singlepass(
     out_video: Path,
     srt: Path | None = None,
     quality: str = "auto",
+    codec: str = "h264",
 ) -> None:
     """Render a vertical cut in ONE ffmpeg pass.
 
@@ -354,7 +355,7 @@ def render_cut_singlepass(
         # isn't read as a filter separator.
         vf_args = ["-vf", f"subtitles={srt}:force_style='{style_esc}'"]
 
-    encoder_args = pick_video_encoder(VID, quality=quality)
+    encoder_args = pick_video_encoder(VID, quality=quality, codec=codec)
 
     cmd = [
         FFMPEG,
@@ -480,6 +481,18 @@ def main() -> None:
             "visual fidelity. Use for delivery-grade cuts going to client."
         ),
     )
+    ap.add_argument(
+        "--codec",
+        choices=["h264", "hevc"],
+        default="h264",
+        help=(
+            "video codec. 'h264' (default) is broadest compatibility. "
+            "'hevc' (H.265) gives ~40%% smaller files at the same visible "
+            "quality or noticeably crisper at the same bitrate. Reels/"
+            "TikTok/Shorts accept HEVC ingest since 2022. Pairs well with "
+            "--quality max for delivery masters."
+        ),
+    )
     args = ap.parse_args()
 
     msg_dir = MESSAGES / args.slug
@@ -515,10 +528,18 @@ def main() -> None:
 
     print(
         f"[render] cut #{n} '{slug}' {seg_start:.2f}-{seg_end:.2f}s "
-        f"(quality={args.quality})",
+        f"(quality={args.quality} codec={args.codec})",
         file=sys.stderr,
     )
-    render_cut_singlepass(src, seg_start, seg_end, final, srt=srt, quality=args.quality)
+    render_cut_singlepass(
+        src,
+        seg_start,
+        seg_end,
+        final,
+        srt=srt,
+        quality=args.quality,
+        codec=args.codec,
+    )
 
     print(
         json.dumps(
