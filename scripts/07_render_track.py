@@ -427,7 +427,14 @@ def render_cut_singlepass(
         if not ok:
             break
         t_abs = seg_start + fi / OUT_FPS
-        scaled = cv2.resize(frame, (new_w, OUT_H), interpolation=cv2.INTER_AREA)
+        # INTER_LANCZOS4 for the upscale (source heights are typically 1080
+        # or 1440; we always scale UP to OUT_H=1920). The old INTER_AREA was
+        # the wrong choice here — it's tuned for downscaling and softens
+        # high-frequency detail when used in reverse, which manifested as
+        # mushy text on screen and slightly out-of-focus faces. Lanczos
+        # costs ~5% more wall time but keeps the speaker's eyes / mic /
+        # background text sharp.
+        scaled = cv2.resize(frame, (new_w, OUT_H), interpolation=cv2.INTER_LANCZOS4)
         cx_src = cx_at(smoothed, t_abs)
         cx_scaled = cx_src * (new_w / src_w)
         crop_x = int(round(cx_scaled - OUT_W / 2))
