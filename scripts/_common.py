@@ -142,6 +142,13 @@ def pick_video_encoder(
         # because libx265's quality-vs-CRF curve is offset relative to
         # libx264 — CRF 20 in x265 ≈ CRF 17 in x264 perceptually.
         if codec == "hevc":
+            # 10-bit HEVC (Main 10) for max-quality delivery. 10-bit
+            # reduces banding from filter operations (denoise, sharpen,
+            # the upscale to 1920) and gives modern playback chains a
+            # smoother gradient on stage lighting and projected text.
+            # Main 10 is broadly supported on phones, browsers, and
+            # social platforms since 2018 — unlike 10-bit H.264 (Hi10),
+            # which is niche and breaks mobile playback.
             return [
                 "-c:v",
                 "libx265",
@@ -150,11 +157,15 @@ def pick_video_encoder(
                 "-crf",
                 "20",
                 "-pix_fmt",
-                pix_fmt,
+                "yuv420p10le",
                 # hvc1 tag makes Apple QuickTime / Safari / Reels happy.
                 "-tag:v",
                 "hvc1",
             ]
+        # H.264 stays 8-bit even in max mode. libx264 Hi10 (10-bit) is
+        # not safe to assume on the user's QC device — phones, default
+        # browsers, and most TVs don't decode Hi10. If you want 10-bit
+        # delivery, pair --quality max with --codec hevc.
         return [
             "-c:v",
             "libx264",
@@ -163,7 +174,7 @@ def pick_video_encoder(
             "-crf",
             "17",
             "-pix_fmt",
-            pix_fmt,
+            "yuv420p",
         ]
 
     forced = os.environ.get("VIDEO_ENCODER", "").strip().lower()
