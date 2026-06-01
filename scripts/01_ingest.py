@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -69,15 +70,44 @@ def ingest_youtube(url: str, slug: str | None) -> tuple[Path, dict]:
     if out.exists():
         print(f"[skip] {out} already exists", file=sys.stderr)
     else:
-        # Download best video+audio merged to mp4, prefer 1080p.
+        # Download the highest-quality video+audio available.
+        #
+        # The old format string was:
+        #   bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]
+        # which was leaking source quality two ways:
+        #   (a) [height<=1080] capped at 1080p — threw away the 1440p/2160p
+        #       masters that more sermon channels now upload, leaving the
+        #       render with a softer starting point than the source offered.
+        #   (b) [ext=mp4] forced H.264 and excluded the VP9/AV1 webm streams
+        #       YouTube serves at the same resolution. VP9/AV1 1080p
+        #       typically encodes 3-4× more efficiently than H.264 1080p
+        #       at the bitrates YouTube uses, so the H.264 stream visibly
+        #       loses detail in busy frames.
+        #
+        # The new format prefers ≥1080p in any codec, falling back to the
+        # absolute best if no ≥1080p stream exists. ``--merge-output-format
+        # mp4`` remuxes the result (lossless container swap) so downstream
+        # ffmpeg/cv2 keep working unchanged.
+        #
+        # Cap the upper bound with the SERMON_CUTS_MAX_HEIGHT env var if you
+        # want to throttle disk usage (e.g. =1080 mimics the old default).
+        #
         # Route yt-dlp's progress lines to stderr so downstream consumers
         # parsing our stdout (the final JSON receipt) don't choke on
         # download chatter mixed into the output stream.
+        max_height = os.environ.get("SERMON_CUTS_MAX_HEIGHT", "").strip()
+        if max_height.isdigit():
+            fmt = (
+                f"bestvideo[height>=1080][height<={max_height}]+bestaudio/"
+                f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]"
+            )
+        else:
+            fmt = "bestvideo[height>=1080]+bestaudio/bestvideo+bestaudio/best"
         subprocess.run(
             [
                 "yt-dlp",
                 "-f",
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]",
+                fmt,
                 "--merge-output-format",
                 "mp4",
                 "-o",
