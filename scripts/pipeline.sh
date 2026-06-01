@@ -12,6 +12,10 @@
 # Render flags:
 #   --skip-scrub        skip the 06b SRT lint pass (useful for CI / batch
 #                       runs where no human is around to review suspects)
+#   --target T          delivery target: all (default, 60-90s), shorts
+#                       (re-caps at 60s for YouTube Shorts compatibility),
+#                       reels, tiktok. Forwarded to 04_propose_cuts and
+#                       05_validate_cut.
 #
 # Source can be a YouTube URL or a local .mp4/.mov path.
 
@@ -50,6 +54,7 @@ SOURCE=""
 SLUG=""
 CUTS=""
 SKIP_SCRUB=0
+TARGET="all"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -59,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --reburn-srt)   MODE="reburn"; CUTS="$2"; shift 2;;
     --slug)         SLUG="$2"; shift 2;;
     --skip-scrub)   SKIP_SCRUB=1; shift;;
+    --target)       TARGET="$2"; shift 2;;
     -h|--help)      usage;;
     *)              SOURCE="$1"; shift;;
   esac
@@ -107,8 +113,8 @@ case "$MODE" in
     $PY "$SCRIPTS/02_transcribe.py" "$SLUG"
     echo "→ [3/4] VAD"
     $PY "$SCRIPTS/03_vad_segments.py" "$SLUG"
-    echo "→ [4/4] propose-cuts input ready"
-    $PY "$SCRIPTS/04_propose_cuts.py" "$SLUG"
+    echo "→ [4/4] propose-cuts input ready (target=$TARGET)"
+    $PY "$SCRIPTS/04_propose_cuts.py" "$SLUG" --target "$TARGET"
     echo
     echo "Next: your AI editor reads propose_input.json + prompts/propose_cuts.md"
     echo "and writes memory/messages/$SLUG/cuts_proposed.json"
@@ -119,8 +125,8 @@ case "$MODE" in
     [[ -z "$CUTS" ]] && { echo "cut index required"; exit 1; }
     IFS=',' read -ra IDXS <<< "$CUTS"
     for IDX in "${IDXS[@]}"; do
-      echo "→ cut #$IDX: validate"
-      $PY "$SCRIPTS/05_validate_cut.py" "$SLUG" "$IDX" --write-back
+      echo "→ cut #$IDX: validate (target=$TARGET)"
+      $PY "$SCRIPTS/05_validate_cut.py" "$SLUG" "$IDX" --target "$TARGET" --write-back
       echo "→ cut #$IDX: build SRT"
       $PY "$SCRIPTS/06_build_srt.py" "$SLUG" "$IDX"
       scrub "$IDX"

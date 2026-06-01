@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import SCHEMA_VERSION, prompts_dir, resolve_messages_dir
+from _common import SCHEMA_VERSION, config_dir, prompts_dir, resolve_messages_dir
 
 MESSAGES = resolve_messages_dir()
 
@@ -61,10 +61,30 @@ def words_to_text_with_timestamps(words: list[dict]) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("slug")
+    ap.add_argument(
+        "--target",
+        choices=["all", "shorts", "reels", "tiktok"],
+        default="all",
+        help=(
+            "delivery target. 'all' (default) uses the 60-90s window from "
+            "render_defaults.yaml. 'shorts' caps at shorts_max_duration_s "
+            "(60s) for YouTube Shorts compatibility. 'reels'/'tiktok' are "
+            "currently aliases for 'all' — the same window fits both."
+        ),
+    )
     args = ap.parse_args()
     msg_dir = MESSAGES / args.slug
     transcript = json.loads((msg_dir / "transcript.json").read_text())
     vad = json.loads((msg_dir / "vad.json").read_text())
+
+    import yaml as _yaml
+
+    cfg = _yaml.safe_load((config_dir() / "render_defaults.yaml").read_text())
+    cut_cfg = cfg.get("cut_validation", {})
+    min_s = cut_cfg.get("min_duration_s", 60)
+    max_s = cut_cfg.get("max_duration_s", 90)
+    if args.target == "shorts":
+        max_s = cut_cfg.get("shorts_max_duration_s", 60)
 
     compact_transcript = words_to_text_with_timestamps(transcript["words"])
     combined = {
@@ -74,6 +94,12 @@ def main() -> None:
         "transcript_compact": compact_transcript,
         "candidate_cut_points": vad["candidate_cut_points"],
         "n_words": sum(1 for w in transcript["words"] if w.get("type") == "word"),
+        # The LLM reads `target` + duration window directly so a single
+        # prompt template covers all delivery targets without per-target
+        # forks. shorts → 60-60s; everything else → 60-90s.
+        "target": args.target,
+        "duration_min_s": min_s,
+        "duration_max_s": max_s,
     }
     out = msg_dir / "propose_input.json"
     out.write_text(json.dumps(combined, indent=2, ensure_ascii=False))

@@ -40,14 +40,19 @@ subtitle:
 
 cut_validation:
   min_pause_after_last_token_s: 0.5
-  # Duration ceiling for short-form platforms. Reels, Shorts, and TikTok
-  # all retain best below ~60s — past that the algorithm deranks and the
-  # save/share rate drops sharply. 05_validate_cut warns when a proposed
-  # cut exceeds this; the LLM in 04_propose_cuts is told the same number.
-  max_duration_s: 60
-  # Below this the cut probably doesn't have room for a complete arc
-  # (hook + development + payoff). LLM avoids; validate just warns.
-  min_duration_s: 25
+  # Default duration window: 60-90s. Gives room for a complete
+  # spiritual/emotional/practical arc (hook → development → payoff) without
+  # dragging. Aligns with Reels (90s native) and TikTok (no relevant cap)
+  # in 2025/2026 — the old "60s sweet spot" reasoning was based on early
+  # short-form retention curves that have since shifted.
+  #
+  # YouTube Shorts still hard-caps at 60s. To produce a Shorts-safe cut,
+  # run with --target shorts on 04_propose_cuts / 05_validate_cut (or
+  # pipeline.sh --target shorts). That re-applies shorts_max_duration_s
+  # as the ceiling and tells the LLM to stay under it.
+  min_duration_s: 60
+  max_duration_s: 90
+  shorts_max_duration_s: 60            # ceiling when --target=shorts
   forbid_endings:                      # se cut termina nessas palavras, INVALID
     - porque
     - mas

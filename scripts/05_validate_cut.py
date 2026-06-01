@@ -67,6 +67,16 @@ def main() -> None:
     ap.add_argument("cut_index", type=int, help="1-based index in cuts_proposed.json")
     ap.add_argument("--max-extend-s", type=float, default=8.0)
     ap.add_argument("--write-back", action="store_true")
+    ap.add_argument(
+        "--target",
+        choices=["all", "shorts", "reels", "tiktok"],
+        default="all",
+        help=(
+            "delivery target. 'shorts' reapplies shorts_max_duration_s (60s) "
+            "as the ceiling — YouTube Shorts hard-caps there. 'all' (default), "
+            "'reels', 'tiktok' use the 60-90s window from render_defaults.yaml."
+        ),
+    )
     args = ap.parse_args()
 
     msg_dir = MESSAGES / args.slug
@@ -126,13 +136,22 @@ def main() -> None:
     )
 
     duration = adj_end - adj_start
-    max_dur = CFG.get("max_duration_s")
+    # --target shorts re-applies the 60s ceiling for YouTube Shorts.
+    # Other targets (reels/tiktok/all) get the default 60-90s window.
+    if args.target == "shorts":
+        max_dur = CFG.get("shorts_max_duration_s", CFG.get("max_duration_s"))
+        ceiling_reason = "YouTube Shorts hard-caps at 60s"
+    else:
+        max_dur = CFG.get("max_duration_s")
+        ceiling_reason = (
+            "above this the arc usually drags and Reels/TikTok retention falls"
+        )
     min_dur = CFG.get("min_duration_s")
     duration_warnings: list[str] = []
     if max_dur is not None and duration > max_dur:
         duration_warnings.append(
             f"duração {duration:.1f}s excede o teto de {max_dur}s "
-            f"(Reels/Shorts/TikTok derankam acima disso)"
+            f"({ceiling_reason})"
         )
     if min_dur is not None and duration < min_dur:
         duration_warnings.append(
@@ -143,6 +162,8 @@ def main() -> None:
     result = {
         "ok": not is_forbidden_ending(last_text) and not duration_warnings,
         "cut_index": args.cut_index,
+        "target": args.target,
+        "duration_ceiling_s": max_dur,
         "original_start": orig_start,
         "original_end": orig_end,
         "adjusted_start": adj_start,
