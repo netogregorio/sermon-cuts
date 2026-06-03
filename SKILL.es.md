@@ -104,10 +104,12 @@ Si él rechaza/pide cambio en un corte:
 
 ## Reglas hard (no negociar con usuario)
 
-1. **Vertical 1080×1920**. Source horizontal → `scale=-2:1920,crop=1080:1920` con tracking dinámico de X vía MediaPipe. **Nunca** letterbox, **nunca** scale+pad con blur background.
+1. **Vertical 1080×1920**. Source horizontal → scale Lanczos + crop dinámico (X vía face/pose, Y vía regla de los tercios `face_y_target=0.40`). **Nunca** letterbox, **nunca** scale+pad con blur background.
 2. **Subtítulo sentence case**, jamás UPPERCASE.
 3. **Outline negro 0.8**, FontSize 16, MarginV 50. No inventar.
 4. **Cut debe tener arco completo**: hook → desarrollo → conclusión. Si LLM no logra identificar conclusión clara, rechaza el cut.
+5. **Duración 60–90s** default (sweet spot para Reels/TikTok). `--target shorts` re-cap en 60s (YouTube Shorts hard cap).
+6. **Scrub teológico**: durante limpieza de SRT (heurístico O LLM), NUNCA altera sentido teológico ni intención del orador. Solo arregla error obvio de transcripción.
 
 ## Decisiones que deben ser diferidas al usuario (no automatizar)
 
@@ -116,6 +118,8 @@ Si él rechaza/pide cambio en un corte:
 - Override de tema/slug del corte
 
 ## Comandos de invocación típicos
+
+Usa `pipeline.sh` (macOS/Linux), `pipeline.bat` (Windows), o `python pipeline.py` (cualquier OS) — misma surface de flags.
 
 ```bash
 # Pipeline completo, modo interactivo (default)
@@ -126,6 +130,13 @@ Si él rechaza/pide cambio en un corte:
 
 # Renderizar cortes específicos ya propuestos
 ~/.claude/skills/sermon-cuts/scripts/pipeline.sh --render-cuts 2,4,7 --slug vinde_a_mim
+
+# Calidad de entrega para cliente: max quality + HEVC + LLM scrub completo
+~/.claude/skills/sermon-cuts/scripts/pipeline.sh --render-cut 3 --slug vinde_a_mim \
+  --quality max --codec hevc --llm-scrub
+
+# YouTube Shorts (re-cap en 60s)
+~/.claude/skills/sermon-cuts/scripts/pipeline.sh --render-cuts 1,2 --slug vinde_a_mim --target shorts
 
 # Reaplicar solo subtítulo (sin retracking) en un corte ya hecho
 ~/.claude/skills/sermon-cuts/scripts/pipeline.sh --reburn-srt 2 --slug vinde_a_mim
