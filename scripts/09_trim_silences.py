@@ -137,6 +137,15 @@ def main() -> None:
     ap.add_argument("slug")
     ap.add_argument("cut_index", type=int)
     ap.add_argument("--in-place", action="store_true")
+    ap.add_argument(
+        "--quality",
+        choices=["auto", "max"],
+        default="auto",
+        help=(
+            "encoder quality for the re-encode pass — should match what 07 "
+            "used, otherwise the trimmed output silently downgrades."
+        ),
+    )
     args = ap.parse_args()
 
     msg_dir = MESSAGES / args.slug
@@ -206,7 +215,7 @@ def main() -> None:
         "[vout]",
         "-map",
         "[aout]",
-        *pick_video_encoder(VID),
+        *pick_video_encoder(VID, quality=args.quality),
         "-color_range",
         "tv",
         "-colorspace",

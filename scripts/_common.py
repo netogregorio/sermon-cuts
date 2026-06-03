@@ -99,16 +99,26 @@ def resolve_ffmpeg(config_value: str | None = None) -> str:
 # ─── video encoder selection ──────────────────────────────────────────────
 
 
-def pick_video_encoder(config: dict) -> list[str]:
+def pick_video_encoder(config: dict, *, quality: str = "auto") -> list[str]:
     """Return the ffmpeg encoder argv chunk best suited to this machine.
 
-    On Apple Silicon we prefer ``h264_videotoolbox`` (hardware-accelerated,
-    ~6-10× faster than libx264 ``preset=slow`` at indistinguishable quality
-    for 1080p talking-head content). Everywhere else we fall through to
-    whatever the config says (typically libx264 CRF).
+    Default (``quality="auto"``): on Apple Silicon prefer
+    ``h264_videotoolbox`` (hardware-accelerated, ~6-10× faster than libx264
+    ``preset=slow`` at near-indistinguishable quality for 1080p talking-head
+    content). Everywhere else, fall through to whatever the config says
+    (typically libx264 CRF).
 
-    Override either way with ``VIDEO_ENCODER=libx264`` / ``=h264_videotoolbox``
-    in the env — useful for benchmarking or when ffmpeg lacks VideoToolbox.
+    ``quality="max"``: force ``libx264 -preset slower -crf 17`` regardless
+    of platform and ignore ``VIDEO_ENCODER``. The hardware encoder is fast
+    but trades a few percent of visual fidelity for that speed; max mode
+    is for delivery cuts where the few extra minutes of encode time are
+    worth the slight quality bump. The pix_fmt stays at yuv420p so the
+    output remains broadly compatible with Reels/Shorts/TikTok ingest.
+
+    Override the default selection with ``VIDEO_ENCODER=libx264`` /
+    ``=h264_videotoolbox`` in the env — useful for benchmarking or when
+    ffmpeg lacks VideoToolbox. ``quality="max"`` takes precedence over
+    the env override.
 
     The function returns a list of ffmpeg arguments meant to splice straight
     into a Popen/run argv, e.g.::
@@ -116,14 +126,29 @@ def pick_video_encoder(config: dict) -> list[str]:
         cmd = [FFMPEG, "-y", "-i", "-", *pick_video_encoder(CFG["video"]),
                "-movflags", "+faststart", out]
     """
+    pix_fmt = config.get("pix_fmt", "yuv420p")
+
+    if quality == "max":
+        # Delivery-grade software encode. CRF 17 is the practical floor for
+        # visually-transparent H.264 — anything lower trades file size for
+        # quality differences invisible at 1080p talking-head.
+        return [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "slower",
+            "-crf",
+            "17",
+            "-pix_fmt",
+            pix_fmt,
+        ]
+
     forced = os.environ.get("VIDEO_ENCODER", "").strip().lower()
     encoder = config.get("encoder", "libx264")
     if forced:
         encoder = forced
     elif platform.system() == "Darwin" and platform.machine() == "arm64" and encoder == "libx264":
         encoder = "h264_videotoolbox"
-
-    pix_fmt = config.get("pix_fmt", "yuv420p")
 
     if encoder == "h264_videotoolbox":
         # Hardware encoder: tune via bitrate target instead of CRF.

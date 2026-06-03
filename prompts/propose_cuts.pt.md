@@ -12,15 +12,23 @@ Shorts ou TikTok.
 1. **Cada corte deve ter um arco narrativo completo.** Começo (hook),
    meio (desenvolvimento), fim (conclusão ou punchline). Se você não consegue nomear
    os três para um span, não proponha.
-2. **Duração: 25s–60s. Teto duro: 60s.** Reels, Shorts e TikTok derankam
-   passando de ~60s e a retenção despenca. Sweet spot: 35–55s. Rejeite
-   qualquer coisa acima de 60s — se o arco precisa de mais, divida em
-   dois cortes independentes (cada um com seu próprio hook + punchline).
+2. **Duração: respeite a janela `duration_min_s`–`duration_max_s` do input
+   JSON (default 60s–90s).** Esse range dá espaço pro arco completo
+   (hook → desenvolvimento → conclusão) sem arrastar. Sweet spot: 70–85s.
+   Se o input tem `"target": "shorts"`, o teto cai pra 60s — YouTube Shorts
+   tem hard cap. Rejeite qualquer coisa fora do range: se o arco precisa
+   de mais, divida em dois cortes independentes (cada um com seu próprio
+   hook + punchline); se precisa de menos, provavelmente é só transição
+   e não deveria ser proposto.
 3. **Início/fim devem alinhar com pausas do VAD.** Pegue `start` de
    `candidate_cut_points` perto do começo natural, e `end` de um
-   candidato ≥ o fim natural. Nunca divida no meio de palavra, no meio de pensamento, ou em
-   uma conjunção tipo "porque", "mas", "que", "e", "para" — essas sinalizam que a
-   frase continua.
+   candidato ≥ o fim natural. Nunca divida no meio de palavra, no meio
+   de pensamento, ou em uma conjunção/preposição tipo "porque", "mas",
+   "então", "quando", "se", "para", "que", "e" — essas sinalizam que a
+   frase continua. **A primeira palavra do cut também não pode ser uma
+   dessas** — isso indica que o cut começou no meio de um raciocínio
+   anterior. Em vez disso, ancore `start` logo após uma pausa que segue
+   um `.!?` no transcript.
 4. **Self-contained.** Um viewer pela primeira vez (sem contexto prévio do
    sermão) precisa entender o ponto. Se o palestrante diz "como eu disse
    antes…" ou "voltando ao versículo…", o corte precisa do antecedente.

@@ -12,15 +12,22 @@ Shorts, or TikTok.
 1. **Each cut must have a complete narrative arc.** Beginning (hook),
    middle (development), end (conclusion or punchline). If you can't name
    all three for a span, do not propose it.
-2. **Duration: 25s–60s. Hard ceiling: 60s.** Reels, Shorts, and TikTok
-   all derank past ~60s and retention drops sharply. Sweet spot: 35–55s.
-   Reject anything over 60s — if the arc needs more, split it into two
-   independent cuts (each with its own hook + payoff).
+2. **Duration: respect the `duration_min_s`–`duration_max_s` window from
+   the input JSON (default 60s–90s).** That range leaves room for a
+   complete arc (hook → development → conclusion) without dragging.
+   Sweet spot: 70–85s. If the input carries `"target": "shorts"`, the
+   ceiling drops to 60s — YouTube Shorts hard-caps there. Reject anything
+   outside the range: if the arc needs more, split it into two
+   independent cuts (each with its own hook + payoff); if it needs less,
+   it's probably just a transition and shouldn't be proposed.
 3. **Start/end must align to VAD pauses.** Pick `start` from
    `candidate_cut_points` near the natural beginning, and `end` from a
    candidate ≥ the natural end. Never split mid-word, mid-thought, or on a
-   conjunction like "porque", "mas", "que", "e", "para" — those signal the
-   sentence continues.
+   conjunction/preposition like "porque", "mas", "então", "quando", "se",
+   "para", "que", "e" — those signal the sentence continues. **The cut's
+   first word can't be one of those either** — it means the cut began
+   mid-reasoning from prior context. Instead, anchor `start` right after
+   a pause that follows a `.!?` in the transcript.
 4. **Self-contained.** A first-time viewer (no prior context from the
    sermon) must understand the point. If the speaker says "como eu disse
    antes…" or "voltando ao versículo…", the cut needs the antecedent.
