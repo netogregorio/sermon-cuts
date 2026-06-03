@@ -11,12 +11,26 @@ es seguro y omite el trabajo hecho a menos que use `--force`).
 ./scripts/01_ingest.py <youtube-url-o-ruta-local> [--slug SLUG]
 ```
 
-URL de YouTube → usa yt-dlp para descargar la mejor calidad hasta 1080p como MP4.
-Archivo local → enlaces simbólicos (o copia si falla el symlink).
+URL de YouTube → usa yt-dlp con format string `bestvideo[height>=1080]+
+bestaudio/bestvideo+bestaudio/best`. Captura masters 1440p/2160p y
+streams VP9/AV1 cuando están disponibles (~3-4× más eficientes que el
+H.264 1080p de YouTube). Cap el límite superior con
+`SERMON_CUTS_MAX_HEIGHT=1080` si el uso de disco importa.
+
+Archivo local → enlaces simbólicos (o copia si el symlink falla — común
+en Windows sin Developer Mode).
+
+Tras la descarga, hace ffprobe al source y guarda resolución, fps,
+codec y bitrate en `meta.json.source_quality`. Avisa cuando el source
+está por debajo del piso práctico para entrega limpia:
+
+- height < 1080 (cualquier upscale del render es con pérdida)
+- bitrate < 2 Mbps (los artefactos de compresión de YouTube se notarán)
+- fps < 24 (judder de movimiento)
 
 Escribe:
 - `memory/messages/<slug>/source.mp4`
-- `memory/messages/<slug>/meta.json` (URL/ruta/título/duración)
+- `memory/messages/<slug>/meta.json` (URL/ruta/título/duración + source_quality + source_quality_warnings)
 
 Derivación del slug: desde el título del YouTube o nombre del archivo (convertido a snake_case).
 Sobrescriba con `--slug`.
@@ -145,6 +159,7 @@ Escribe `memory/messages/<slug>/srts/NN-slug.srt`.
 ```bash
 ./scripts/06b_scrub_srt.py <slug> <cut_index> [--agent-review]
                                               [--use-llm]
+                                              [--full-llm-review]
                                               [--auto-apply]
                                               [--dry-run]
                                               [--corrections PATH]
@@ -154,7 +169,8 @@ Paso de lint que corre **entre `06_build_srt` y `07_render_track`**,
 escaneando el SRT en busca de los patrones de error más comunes de las
 auto-captions de YouTube (límites de frase con palabra perdida, vacilaciones
 duplicadas, términos teológicos mal escritos). Permite corregir errores de
-transcripción antes del burn-in — ahorra un re-encode entero por typo.
+transcripción antes del burn-in en lugar de después — ahorra un re-encode
+entero por typo.
 
 ### Qué busca
 
@@ -187,7 +203,8 @@ transcripción antes del burn-in — ahorra un re-encode entero por typo.
 | Camino | Cuándo usar |
 |---|---|
 | **`--agent-review`** (default en non-TTY con sospechosos) | El orquestador (Claude Code / Cursor / …) está leyendo stdout. 06b emite JSON estructurado con texto del cue prev/next, snippet word-level del transcript alrededor de cada sospechoso, y la ruta a `prompts/scrub_srt.md`. El agente lee el prompt, decide fixes, aplica vía Edit tool, y reanuda el pipeline con `--skip-scrub`. |
-| **`--use-llm`** | Runs standalone (cron, nightly, sin agente atado). Llama Anthropic Claude (prefiere `ANTHROPIC_API_KEY`) o Groq Llama (`GROQ_API_KEY` fallback). El mismo `prompts/scrub_srt.md` se vuelve system prompt; el LLM retorna `{fixes: [{cue, new_text, reason}]}` que aplicamos al SRT. |
+| **`--use-llm`** | Review LLM-asistido **solo en cues flaggeados por reglas** (cron, nightly, sin agente atado). Llama Anthropic Claude (prefiere `ANTHROPIC_API_KEY`) o Groq Llama (`GROQ_API_KEY` fallback). Barato pero pierde errores que las heurísticas no flaggearon. |
+| **`--full-llm-review`** | Review LLM del **SRT completo**. Envía cada cue + snippet word-level del transcript por-cue al LLM en una llamada y aplica todos los fixes retornados. Atrapa errores que las reglas no pueden hacer pattern-match (typos de palabras juntas `paraa`, artículos equivocados `na seu`, letras faltantes `pentec`, nombres propios en minúscula, cadenas de filler, duplicados de VTT). Costo ~$0.01/corte en Claude Haiku 4.5. Los fixes de forbidden-ending se manejan vía edits pareados de cue (strip de uno, prepend al siguiente). Mismo orden de preferencia de API key que `--use-llm`. |
 | **`--auto-apply`** | Solo reglas, confianza ≥ 0.85. En la práctica solo colapsa vacilaciones silenciosamente. Modo más barato. |
 
 ### Otros modos

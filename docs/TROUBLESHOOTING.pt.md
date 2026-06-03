@@ -6,9 +6,9 @@ Quando algo quebra. A maioria desses casos a gente bateu pessoalmente
 durante dogfooding em sermões reais — o fix gruda.
 
 Se não achar seu problema aqui, roda `./scripts/pipeline.sh doctor`
-primeiro — ele checa ffmpeg, yt-dlp, deps Python, fontes e o layout
-de symlinks da skill, te dizendo o que tá quebrado antes de você
-gastar um render.
+(macOS/Linux) ou `scripts\pipeline.bat doctor` (Windows) primeiro — ele
+checa ffmpeg, yt-dlp, deps Python, fontes e o layout de symlinks da
+skill, te dizendo o que tá quebrado antes de você gastar um render.
 
 ---
 
@@ -288,11 +288,70 @@ ou alguém atravessa, pode driftar. Opções:
 
 ---
 
+## Específico de Windows
+
+### `'mklink' is not recognized` durante install.bat
+
+`install.bat` usa `mklink /J` pra criar directory junction quando
+symlinks não estão disponíveis (sem admin / Developer Mode). No Windows
+7 ou com cmd.exe substituído por um shell não-padrão, o `mklink` pode
+estar faltando. Soluções:
+
+1. Ative Developer Mode (Settings → Update & Security → For Developers
+   → Developer Mode), que deixa o `install.py` usar symlinks de verdade
+   via `Path.symlink_to` do Python. Sem admin.
+2. Rode o install.bat de um cmd.exe Admin.
+3. Cai pro modo copy — `install.py` vai copiar os dirs da skill em vez
+   de linkar (usa mais disco e não acompanha updates futuros do repo,
+   mas funciona sem admin).
+
+### `'ffmpeg' is not recognized as an internal or external command`
+
+ffmpeg não tá no PATH ou não tá instalado. A detecção do `install.py`
+olha PATH mais `C:\ffmpeg\bin\`, `C:\Program Files\ffmpeg\bin\` e a
+variante Program Files (x86). Escolhe um:
+
+```cmd
+winget install Gyan.FFmpeg
+scoop install ffmpeg
+choco install ffmpeg
+```
+
+Ou baixa manualmente de [ffmpeg.org](https://ffmpeg.org/download.html),
+descompacta em `C:\ffmpeg\` e o `resolve_ffmpeg` pega sem editar PATH.
+
+### Install do MediaPipe falha com `Microsoft Visual C++ 14.0 or greater is required`
+
+Alguns wheels do MediaPipe precisam das MSVC build tools. Instala as
+[Visual Studio Build Tools](https://aka.ms/vs/17/release/vs_buildtools.exe)
+(seleciona o workload "Desktop development with C++") e re-roda
+`pip install -r requirements.txt`. A maioria dos usuários não vai bater
+isso — MediaPipe entrega wheels pré-compilados pra Python 3.10–3.12 no
+Windows.
+
+### Paths longos causam `FileNotFoundError`
+
+Windows tem limite default de 260 caracteres no path. A instalação da
+skill em
+`%USERPROFILE%\.claude\skills\sermon-cuts\memory\messages\<long-slug>\...`
+pode bater esse limite em nomes de sermão profundos. Ative paths longos:
+
+```cmd
+reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem ^
+  /v LongPathsEnabled /t REG_DWORD /d 1 /f
+```
+
+Ou seta `SERMON_CUTS_MESSAGES_DIR=D:\sc` (ou path curto similar) no
+seu ambiente pra manter paths curtos.
+
+---
+
 ## Doctor do pipeline
 
 Na dúvida:
 ```bash
-./scripts/pipeline.sh doctor
+./scripts/pipeline.sh doctor      # macOS / Linux
+scripts\pipeline.bat doctor       # Windows
 ```
 
 Checa: ffmpeg + libass, yt-dlp, deps Python, disponibilidade de fonte,

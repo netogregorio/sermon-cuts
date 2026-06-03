@@ -106,9 +106,18 @@ Sim. Escolhe um preset built-in (`arial-black`, `helvetica-bold`,
 
 ### Funciona em Windows?
 
-Windows nativo: ainda sem suporte oficial. **Melhor caminho no
-Windows**: instalar WSL2 (Windows Subsystem for Linux) e seguir as
-instruções de Linux. Docker é outra opção (veja `Dockerfile`).
+**Sim, nativamente** desde a v0.2.0 — sem necessidade de WSL. O
+orquestrador (`pipeline.py`) e o instalador (`install.py`) são Python
+puro. Um wrapper `pipeline.bat` deixa você rodar
+`pipeline.bat <youtube-url>` do cmd ou PowerShell do mesmo jeito que
+usuários de macOS/Linux rodam `pipeline.sh`.
+
+Setup é um único `winget` de Python + git + ffmpeg + yt-dlp, depois
+`scripts\install.bat` do repo clonado. Walkthrough completo em
+[INSTALL.pt.md](INSTALL.pt.md#windows).
+
+WSL2 e Docker ainda funcionam se preferir — mas Windows nativo é o
+caminho recomendado agora.
 
 ### E Linux?
 
