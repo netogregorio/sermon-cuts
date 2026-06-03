@@ -634,6 +634,173 @@ def attach_agent_context(
             s["rule_suggestion"] = s["suggestion"]
 
 
+# ─── --full-llm-review: send the entire SRT for review ────────────────────
+#
+# The rule-based + targeted-LLM scrub (--use-llm) only looks at cues the
+# heuristics flagged. Real-world YouTube auto-captions have plenty of
+# errors that don't match any of our rule patterns:
+#   - joined-word typos (paraa, doss, naa)
+#   - wrong articles (na seu, de o senhor)
+#   - missing letters (pentec for Pentecostes)
+#   - silent capitalization errors (lowercase Babel, Senhor)
+#   - filler chains (e a é, é a é a tipo assim)
+#   - duplicate words from VTT artifacts (muito muito)
+#
+# --full-llm-review sends the whole SRT plus per-cue word-level transcript
+# context to the LLM in one call, letting it review every cue (not just
+# the rule-flagged ones). Cost on Claude Haiku 4.5 is ~$0.01 per cut SRT.
+
+
+def _build_full_review_prompt(
+    cues: list[dict],
+    transcript_words: list[dict],
+    cut_start_s: float,
+) -> tuple[str, str]:
+    """Return (system_prompt, user_message) for a whole-SRT LLM review.
+
+    Differs from the rule-flagged prompt in three ways:
+      1. Sends EVERY cue with its surrounding transcript snippet, not just
+         heuristic-flagged ones.
+      2. System message explicitly enumerates the YT-VTT-specific error
+         classes the LLM should look for (joined words, wrong articles,
+         missing letters, capitalization, filler chains, duplicates).
+      3. Re-emphasizes the inviolable theological-meaning rule from
+         scrub_srt.md so the LLM doesn't paraphrase or "improve" theology.
+    """
+    system = (
+        "You are reviewing a Portuguese-language sermon SRT that was "
+        "generated from YouTube auto-captions. Your job is to fix "
+        "transcription errors before the SRT is burned into the final "
+        "video.\n\n"
+        "## Error classes to look for (YT VTT-specific)\n\n"
+        "- **Joined-word typos**: 'paraa festa' → 'para a festa'\n"
+        "- **Wrong/missing articles**: 'na seu próprio idioma' → "
+        "'no seu próprio idioma' (idioma is masculine); 'de o senhor' → "
+        "'o Senhor' (extra de)\n"
+        "- **Missing letters**: 'pentec' → 'Pentecostes', 'Pentecoste' "
+        "(missing s)\n"
+        "- **Capitalization errors**: 'de babel' → 'de Babel' (biblical "
+        "place), 'senhor' → 'Senhor' when referring to God\n"
+        "- **Filler-word chains**: 'é a é a tipo assim' → 'é tipo "
+        "assim'; 'e a é muito' → 'é muito'\n"
+        "- **VTT duplicates**: 'muito muito' → 'muito'\n"
+        "- **Hesitation prefixes** that hurt readability: 'tá Lembra' "
+        "→ 'Lembra' (cuts the disfluent 'tá')\n"
+        "- **Forbidden cue endings** — cues ending on conjunctions / "
+        "prepositions ('mas', 'porque', 'e', 'que', 'para', 'de', "
+        "'com', 'em', 'então', 'quando', 'se') read as hanging thoughts. "
+        "Fix by **moving that word to the start of the next cue**: emit "
+        "TWO fixes — one for the source cue with the trailing word "
+        "removed, one for the next cue with it prepended. Example: cue "
+        "11 'de línguas mas' → 'de línguas'; cue 12 'as pessoas se "
+        "entendiam' → 'mas as pessoas se entendiam'.\n\n"
+        "## What you MUST NOT change\n\n"
+        "- **Theological meaning or speaker intent.** Never paraphrase "
+        "or 'improve'. Only fix transcription errors.\n"
+        "- **Words the speaker didn't say.** Don't add content. The "
+        "`transcript_context` field shows what was actually spoken — "
+        "evidence must be there before you 'recover' a word.\n"
+        "- **Intentional repetition for emphasis**: 'Não, não!' or "
+        "'lá, lá' (speaker stress) — leave it.\n"
+        "- **Sentence case.** Never UPPERCASE for emphasis.\n"
+        "- **Cue numbers, timestamps, or formatting blocks** "
+        "(`{\\fs22\\b1}` etc) — only return the body text.\n\n"
+        "## Output format\n\n"
+        "Return ONLY cues that need a fix. Skip anything already correct. "
+        "Raw JSON, no markdown fences:\n"
+        '  {"fixes": [{"cue": <int>, "new_text": "<str>", '
+        '"reason": "<short>"}, ...]}\n'
+    )
+
+    # Build the per-cue review block. transcript_context is what the
+    # speaker actually said around that cue's timestamp — the LLM uses
+    # it as evidence for fixes.
+    cue_blocks = []
+    for cue in cues:
+        snippet = transcript_snippet_around(
+            transcript_words, cue["tc_start"], cut_start_s, window_s=4.0
+        )
+        cue_blocks.append({
+            "cue": cue["n"],
+            "tc": cue["tc_start"],
+            "text": cue["text"],
+            "transcript_context": snippet,
+        })
+
+    user = (
+        "Here is every cue in the SRT, paired with the word-level "
+        "transcript snippet from around its timestamp. Review them all "
+        "and return fixes for the ones that need correction.\n\n"
+        f"```json\n{json.dumps(cue_blocks, indent=2, ensure_ascii=False)}\n```\n"
+    )
+    return system, user
+
+
+def full_llm_review(
+    cues: list[dict],
+    transcript_words: list[dict],
+    cut_start_s: float,
+) -> list[dict]:
+    """Run a whole-SRT LLM review. Returns ``[{cue, new_text, reason}]``
+    fixes the LLM is confident about. Same fallback policy as
+    ``llm_review``: Anthropic preferred, Groq fallback, empty list on
+    any failure so the caller can handle gracefully."""
+    has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_groq = bool(os.environ.get("GROQ_API_KEY"))
+    if not (has_anthropic or has_groq):
+        warn(
+            "--full-llm-review pedido mas nenhuma API key encontrada",
+            hint="defina ANTHROPIC_API_KEY ou GROQ_API_KEY no env",
+        )
+        return []
+    system, user = _build_full_review_prompt(cues, transcript_words, cut_start_s)
+
+    if has_anthropic:
+        try:
+            import anthropic
+        except ImportError:
+            warn("pacote `anthropic` não instalado",
+                 hint="pip install anthropic")
+            return []
+        try:
+            client = anthropic.Anthropic()
+            resp = client.messages.create(
+                model="claude-haiku-4-5",
+                # Full SRTs can have 40+ cues; bump max_tokens so the LLM
+                # has room to return a fix list for every cue if needed.
+                max_tokens=4096,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+            raw = "".join(getattr(b, "text", "") for b in resp.content)
+        except Exception as e:
+            warn(f"chamada Anthropic falhou: {e}")
+            return []
+        return _parse_llm_fixes(raw)
+
+    try:
+        from groq import Groq
+    except ImportError:
+        warn("pacote `groq` não instalado (e ANTHROPIC_API_KEY ausente)")
+        return []
+    try:
+        client = Groq()
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=4096,
+            temperature=0.2,
+        )
+        raw = resp.choices[0].message.content or ""
+    except Exception as e:
+        warn(f"chamada Groq falhou: {e}")
+        return []
+    return _parse_llm_fixes(raw)
+
+
 # ─── --use-llm: call Anthropic API (or Groq fallback) ─────────────────────
 
 
@@ -759,8 +926,21 @@ def main() -> None:
         "--use-llm",
         action="store_true",
         help=(
-            "run an LLM-assisted review pass (prefers ANTHROPIC_API_KEY, "
-            "falls back to GROQ_API_KEY). Applies fixes the LLM returns."
+            "run an LLM-assisted review pass over RULE-FLAGGED cues only "
+            "(prefers ANTHROPIC_API_KEY, falls back to GROQ_API_KEY). "
+            "Misses errors that don't match any heuristic — use "
+            "--full-llm-review for a complete sweep."
+        ),
+    )
+    ap.add_argument(
+        "--full-llm-review",
+        action="store_true",
+        help=(
+            "send the ENTIRE SRT (every cue + per-cue word-level transcript "
+            "snippet) to the LLM and apply all fixes it returns. Catches "
+            "errors the heuristics miss (joined-word typos, wrong articles, "
+            "missing letters, lowercase proper nouns, filler chains, etc.). "
+            "Cost on Claude Haiku 4.5: ~$0.01 per cut SRT."
         ),
     )
     ap.add_argument(
@@ -833,7 +1013,8 @@ def main() -> None:
     rule_suspects.extend(detect_semantic_gap(cues))
 
     # Decide the operational mode. Order of preference:
-    #   1. explicit flag (--agent-review, --use-llm, --auto-apply, --dry-run)
+    #   1. explicit flag (--full-llm-review, --agent-review, --use-llm,
+    #      --auto-apply, --dry-run)
     #   2. TTY + stdin attached → interactive
     #   3. non-TTY with rule_suspects → default to --agent-review so the
     #      orchestrating AI agent (whichever — Claude Code, Cursor, Codex,
@@ -841,11 +1022,66 @@ def main() -> None:
     #      Lets pipeline.sh route review through the agent loop without
     #      changing its caller.
     #   4. non-TTY with no suspects → behave like --dry-run (no-op).
-    explicit = args.agent_review or args.use_llm or args.auto_apply or args.dry_run
+    explicit = (args.agent_review or args.use_llm or args.auto_apply
+                or args.dry_run or args.full_llm_review)
     interactive = _TTY and sys.stdin.isatty() and not explicit
     agent_mode = args.agent_review or (not explicit and not interactive and bool(rule_suspects))
 
-    if args.dry_run or agent_mode:
+    if args.full_llm_review:
+        # Whole-SRT LLM review — bypasses the rule pass entirely. Sends
+        # every cue + per-cue transcript snippet to the LLM in one call,
+        # applies whatever fixes come back. Includes rule_suspects in the
+        # report for transparency about what the heuristics would have
+        # caught, but the LLM is the source of truth for what gets applied.
+        all_suspects.extend(rule_suspects)
+        transcript_path = msg_dir / "transcript.json"
+        transcript_words: list[dict] = []
+        if transcript_path.exists():
+            try:
+                transcript_words = json.loads(transcript_path.read_text()).get("words", [])
+            except json.JSONDecodeError:
+                transcript_words = []
+        cut_start_s = float(cut.get("start", 0))
+        llm_fixes = full_llm_review(cues, transcript_words, cut_start_s)
+        # Track which cues the LLM touched so the report shows them as
+        # applied even if no rule had flagged them originally.
+        seen_cues: set[int] = set()
+        for fx in llm_fixes:
+            try:
+                target_n = int(fx.get("cue"))
+                new_text = str(fx.get("new_text", "")).strip()
+            except (TypeError, ValueError):
+                continue
+            if not new_text or target_n in seen_cues:
+                continue
+            seen_cues.add(target_n)
+            apply_to_cue(cues, target_n, new_text)
+            applied_count += 1
+            # If the LLM fixed a cue a rule already flagged, mark that
+            # suspect applied; otherwise emit a synthetic record so the
+            # report shows every cue the LLM modified.
+            matched = False
+            for s in all_suspects:
+                if s.get("cue") == target_n and not s.get("applied"):
+                    s["applied"] = True
+                    s["llm_suggestion"] = new_text
+                    s["llm_reason"] = fx.get("reason", "")
+                    matched = True
+                    break
+            if not matched:
+                all_suspects.append({
+                    "cue": target_n,
+                    "tc": next((c["tc_start"] for c in cues if c["n"] == target_n), ""),
+                    "text": next((c["text"] for c in cues if c["n"] == target_n), ""),
+                    "pattern": "full_llm_review",
+                    "matched": "(LLM-detected)",
+                    "suggestion": new_text,
+                    "confidence": 0.9,
+                    "applied": True,
+                    "llm_suggestion": new_text,
+                    "llm_reason": fx.get("reason", ""),
+                })
+    elif args.dry_run or agent_mode:
         # Don't mutate; collect and emit.
         all_suspects.extend(rule_suspects)
     elif args.use_llm:
