@@ -2,7 +2,31 @@
 
 [English](INSTALL.md) · [Português](INSTALL.pt.md) · **Español**
 
-## Dependencias del sistema
+> **Cross-platform.** Sermon Cuts corre nativamente en macOS, Linux y
+> Windows. El orquestador y el instalador son Python puro (`pipeline.py`,
+> `install.py`); los wrappers específicos de cada plataforma (`.sh` /
+> `.bat`) solo hacen handoff hacia ellos.
+
+## Camino rápido: instalador one-shot
+
+```bash
+# macOS / Linux
+curl -fsSL https://onetogregorio.github.io/sermon-cuts/install.sh | bash
+```
+
+```cmd
+REM Windows (PowerShell o cmd; Python 3.10+ y git ya instalados)
+git clone https://github.com/onetogregorio/sermon-cuts %USERPROFILE%\code\sermon-cuts
+%USERPROFILE%\code\sermon-cuts\scripts\install.bat
+```
+
+Ambos instaladores hacen lo mismo (venv, link del skill, .env, preset de
+fuente, modelos MediaPipe, doctor check). Las deps del sistema (ffmpeg,
+yt-dlp) se auto-instalan en macOS (Homebrew) y Debian/Ubuntu (apt); en
+Windows el instalador detecta deps faltantes e imprime el comando
+`winget`/`scoop` para que lo ejecutes.
+
+## Instalación manual — por plataforma
 
 ### macOS
 
@@ -29,6 +53,45 @@ curl -L https://fonts.google.com/download?family=Outfit > /tmp/outfit.zip
 unzip /tmp/outfit.zip -d ~/.local/share/fonts/
 fc-cache -f -v
 ```
+
+### Windows
+
+Prereqs (una vez): instalar Python 3.10+, git, ffmpeg, yt-dlp vía tu
+gestor de paquetes preferido.
+
+```cmd
+REM Usando winget (nativo en Windows 10/11):
+winget install Python.Python.3.12
+winget install Git.Git
+winget install Gyan.FFmpeg
+winget install yt-dlp.yt-dlp
+
+REM Opcional: instalar la fuente Outfit Black
+REM Descarga de https://fonts.google.com/specimen/Outfit
+REM Click derecho en los .ttf -> "Instalar para todos los usuarios" (o por-usuario)
+```
+
+Gestores alternativos: `scoop install python git ffmpeg yt-dlp` o
+`choco install python git ffmpeg yt-dlp`. La descarga manual de ffmpeg
+también funciona — install.py revisa `C:\ffmpeg\bin\`,
+`C:\Program Files\ffmpeg\bin\` y la variante Program Files (x86) además
+del PATH.
+
+Luego clona y ejecuta `install.bat`:
+
+```cmd
+git clone https://github.com/onetogregorio/sermon-cuts %USERPROFILE%\code\sermon-cuts
+cd %USERPROFILE%\code\sermon-cuts
+scripts\install.bat
+```
+
+**Link del skill en Windows**: `install.py` intenta tres estrategias
+para enlazar `%USERPROFILE%\.claude\skills\sermon-cuts\` al repo:
+symlink (necesita admin o Developer Mode), directory junction vía
+`mklink /J` (sin admin), y luego copy (siempre funciona, pero no
+captura updates futuros del repo). Habilita Developer Mode en
+Configuración de Windows → Actualización y Seguridad → Para Programadores
+si quieres que los symlinks rastreen cambios del repo automáticamente.
 
 ### Fallback de fuente
 
@@ -61,14 +124,24 @@ Luego ejecute cualquier script con `--provider=groq`.
 
 ## Opcional: registro de habilidad Claude Code
 
-Si usa Claude Code:
+Los instaladores se encargan de esto automáticamente. Si lo haces a mano:
 
 ```bash
+# macOS / Linux
 mkdir -p ~/.claude/skills/sermon-cuts
 ln -s "$(pwd)/scripts" ~/.claude/skills/sermon-cuts/scripts
 ln -s "$(pwd)/config"  ~/.claude/skills/sermon-cuts/config
 ln -s "$(pwd)/prompts" ~/.claude/skills/sermon-cuts/prompts
 cp SKILL.md ~/.claude/skills/sermon-cuts/SKILL.md
+```
+
+```cmd
+REM Windows (ejecutar desde la raíz del repo en una shell Admin / Developer Mode)
+mkdir "%USERPROFILE%\.claude\skills\sermon-cuts"
+mklink /J "%USERPROFILE%\.claude\skills\sermon-cuts\scripts" "%CD%\scripts"
+mklink /J "%USERPROFILE%\.claude\skills\sermon-cuts\config"  "%CD%\config"
+mklink /J "%USERPROFILE%\.claude\skills\sermon-cuts\prompts" "%CD%\prompts"
+copy SKILL.md "%USERPROFILE%\.claude\skills\sermon-cuts\SKILL.md"
 ```
 
 Claude ahora invocará esta habilidad en solicitudes como "cut this sermon",

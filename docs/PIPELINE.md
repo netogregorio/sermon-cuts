@@ -11,12 +11,26 @@ is safe and skips done work unless `--force`).
 ./scripts/01_ingest.py <youtube-url-or-local-path> [--slug SLUG]
 ```
 
-YouTube URL → uses yt-dlp to download best quality up to 1080p as MP4.
-Local file → symlinks (or copies if symlink fails).
+YouTube URL → uses yt-dlp with format string `bestvideo[height>=1080]+
+bestaudio/bestvideo+bestaudio/best`. Captures 1440p/2160p masters and
+VP9/AV1 streams when available (~3-4× more efficient than YouTube's
+1080p H.264). Cap the upper bound with `SERMON_CUTS_MAX_HEIGHT=1080`
+if disk usage matters.
+
+Local file → symlinks (or copies if symlink fails — common on Windows
+without Developer Mode).
+
+After download, ffprobes the source and stores resolution, fps, codec,
+and bitrate in `meta.json.source_quality`. Warns when the source is
+below the practical floor for clean delivery:
+
+- height < 1080 (any render upscale is lossy)
+- bitrate < 2 Mbps (YouTube compression artifacts will show through)
+- fps < 24 (motion judder)
 
 Writes:
 - `memory/messages/<slug>/source.mp4`
-- `memory/messages/<slug>/meta.json` (URL/path/title/duration)
+- `memory/messages/<slug>/meta.json` (URL/path/title/duration + source_quality + source_quality_warnings)
 
 Slug derivation: from YouTube title or filename (slugified to snake_case).
 Override with `--slug`.
@@ -145,6 +159,7 @@ Writes `memory/messages/<slug>/srts/NN-slug.srt`.
 ```bash
 ./scripts/06b_scrub_srt.py <slug> <cut_index> [--agent-review]
                                               [--use-llm]
+                                              [--full-llm-review]
                                               [--auto-apply]
                                               [--dry-run]
                                               [--corrections PATH]
@@ -188,7 +203,8 @@ instead of after — saves a full re-encode per typo.
 | Path | When to use |
 |---|---|
 | **`--agent-review`** (default in non-TTY with suspects) | The orchestrator (Claude Code / Cursor / …) is reading stdout. 06b emits structured JSON with prev/next cue text, a word-level transcript snippet around each suspect, and the path to `prompts/scrub_srt.md`. The agent reads the prompt, decides fixes, applies them via its Edit tool, and resumes the pipeline with `--skip-scrub`. |
-| **`--use-llm`** | Standalone runs (cron, nightly, no agent attached). Calls Anthropic Claude (prefers `ANTHROPIC_API_KEY`) or Groq Llama (`GROQ_API_KEY` fallback). The same `prompts/scrub_srt.md` becomes the system prompt; the LLM returns a `{fixes: [{cue, new_text, reason}]}` JSON that we apply on the SRT. |
+| **`--use-llm`** | LLM-assisted review on **rule-flagged cues only** (cron, nightly, no agent attached). Calls Anthropic Claude (prefers `ANTHROPIC_API_KEY`) or Groq Llama (`GROQ_API_KEY` fallback). Cheap but misses errors the heuristics didn't flag. |
+| **`--full-llm-review`** | **Whole-SRT** LLM review. Sends every cue + per-cue word-level transcript snippet to the LLM in one call and applies all returned fixes. Catches errors the rule patterns don't match (joined-word typos `paraa`, wrong articles `na seu`, missing letters `pentec`, lowercase proper nouns, filler chains, VTT duplicates). Costs ~$0.01/cut on Claude Haiku 4.5. Forbidden-ending fixes are handled via paired cue edits (strip from one, prepend to next). Same API-key preference order as `--use-llm`. |
 | **`--auto-apply`** | Rule-only, confidence ≥ 0.85. Effectively just collapses hesitation repetitions silently. Cheapest mode. |
 
 ### Other modes
@@ -228,28 +244,56 @@ report goes to stdout:
 
 ```bash
 ./scripts/07_render_track.py <slug> <cut_index> [--no-subs]
+                                                [--preset NAME]
+                                                [--quality {auto,max}]
+                                                [--codec {h264,hevc}]
 ```
 
 Two-pass render:
 
-**Pass 1 — face position sampling.** At 2 fps (default), runs MediaPipe
-BlazeFace short-range detector on the source frame. Records the center-X
-of the largest detected face. Falls back to OpenCV Haar cascade if
-MediaPipe fails.
+**Pass 1 — face position sampling.** At 5 fps (default), runs MediaPipe
+BlazeFace short-range detector on each sampled frame. Records the
+bounding-box center (X and Y) of the largest detected face. Falls back
+in order: MediaPipe Pose Landmarker (shoulder midpoint for X, nose for
+Y), then OpenCV Haar cascade, then hold-last-position. Reads the
+source's native FPS via `cv2.CAP_PROP_FPS` and uses that for the read
+loop — required for A/V sync with non-30fps sources (24, 23.976, 60).
 
-**Smoothing.** Moving average over 2.5s (5 samples) of face X positions
-removes detection jitter and gives a cinematic feel.
+**Smoothing.** Moving average over 2.5s of face (X, Y) positions
+removes detection jitter while keeping the camera responsive to real
+movement.
 
 **Pass 2 — render frame-by-frame.** For each source frame:
-1. Scale to height 1920 preserving aspect (1920×1080 → 3413×1920)
-2. Interpolate smoothed X for the current frame timestamp
-3. Crop 1080×1920 centered on that X (clamped to frame bounds)
-4. Pipe raw BGR frames to ffmpeg for H.264 encoding (CRF 18 preset slow)
+1. Scale to height `OUT_H × (1 + vertical_headroom)` (default 2400)
+   preserving aspect, using `cv2.INTER_LANCZOS4` (Lanczos preserves
+   high-frequency detail on the upscale).
+2. Interpolate smoothed (X, Y) for the current frame timestamp.
+3. Crop 1080×1920: X centered on face X (clamped), Y positioned so
+   the face center lands at `face_y_target × OUT_H` (default 0.40 ≈
+   rule of thirds — cinematic upward bias). Set `face_y_target: null`
+   in config to disable Y adjustment and preserve source framing.
+4. Pipe raw BGR frames to ffmpeg at the source's native FPS; an
+   `fps={OUT_FPS}` filter handles conversion to the output rate.
 
-**Audio mux.** Combines encoded video with the source audio segment.
+**Quality / codec selection.** `pick_video_encoder` returns the encoder
+argv based on `--quality` and `--codec`:
+
+| Combo | Encoder | Notes |
+|---|---|---|
+| `auto h264` (default) | h264_videotoolbox @ 8 Mbps on Apple Silicon; libx264 CRF 18 preset slow elsewhere | Fast iteration |
+| `auto hevc` | hevc_videotoolbox @ 5 Mbps + hvc1 tag | Smaller files, fast |
+| `max h264` | libx264 -preset slower -crf 17, yuv420p | Delivery-grade software encode |
+| `max hevc` | libx265 -preset slower -crf 20, **yuv420p10le** (Main 10) + hvc1 tag | Smallest + cleanest delivery |
+
+`--quality max` also inserts an `hqdn3d=1.5:1.5:6:6, unsharp=...` filter
+chain before subtitle burn — kills high-ISO church-camera chroma noise
+and recovers some of the crispness lost in the upscale.
+
+**Audio mux.** Combines encoded video with the source audio segment
+(seeked via `-ss`/`-to`).
 
 **Subtitle burn.** Applies ffmpeg `subtitles=` filter with `force_style`
-from `config/force_style.txt`. Skip with `--no-subs`.
+from `config/style_presets/<preset>.txt`. Skip with `--no-subs`.
 
 Writes `memory/messages/<slug>/renders/NN-slug.mp4`.
 
@@ -265,9 +309,12 @@ gain to hit target LUFS. Re-encodes audio to AAC 192k, copies video stream.
 `--in-place` overwrites the original render. Otherwise writes a
 `.normalized.mp4` sibling.
 
-## pipeline.sh
+## pipeline.py / pipeline.sh / pipeline.bat
 
-Orchestrator:
+Cross-platform orchestrator. Same flags everywhere — `pipeline.sh` is a
+Unix wrapper that exec's into `pipeline.py`; `pipeline.bat` does the
+same for Windows. Pick the one that matches your shell muscle memory,
+or invoke `python pipeline.py` directly.
 
 ```bash
 # Ingest + transcribe + VAD + prepare propose-input
@@ -278,6 +325,25 @@ Orchestrator:
 
 # Just re-burn subtitles (after correcting transcription) without re-tracking
 ./scripts/pipeline.sh --reburn-srt 3 --slug my_sermon
+```
+
+### Render flags
+
+| Flag | What it does |
+|---|---|
+| `--target {all,shorts,reels,tiktok}` | Delivery target. `shorts` re-caps cuts at 60s (YouTube Shorts hard limit). Default `all` uses the 60–90s window. |
+| `--quality {auto,max}` | `auto` (default) picks the hardware encoder on Apple Silicon for speed. `max` forces libx264/libx265 `-preset slower` plus an `hqdn3d + unsharp` filter chain for delivery-grade output. |
+| `--codec {h264,hevc}` | Video codec. Default `h264` is broadest compatibility. `hevc` (H.265) is ~40% smaller at the same visible quality, accepted by Reels/TikTok/Shorts since 2022. `--quality max --codec hevc` ships in 10-bit Main 10. |
+| `--llm-scrub` | Routes the SRT scrub through `06b_scrub_srt --full-llm-review` — sends every cue + per-cue word-level transcript snippet to the LLM and applies all fixes (not just rule-flagged ones). Needs `ANTHROPIC_API_KEY` or `GROQ_API_KEY`. ~$0.01 per cut. |
+| `--skip-scrub` | Skip the SRT scrub pass entirely (CI / batch). |
+
+```bash
+# Delivery-grade master for a paying client
+./scripts/pipeline.sh --render-cut 3 --slug my_sermon \
+                      --quality max --codec hevc --llm-scrub
+
+# YouTube Shorts–safe cut (forces ≤60s)
+./scripts/pipeline.sh --render-cuts 1,2 --slug my_sermon --target shorts
 ```
 
 ## Per-message directory layout

@@ -31,7 +31,10 @@ edit/
 **/tmp/
 **/cache/
 **/*.vtt
-**/*.task                   # mediapipe models (auto-downloaded)
+# mediapipe models (auto-downloaded by 07_render_track on first run);
+# inline comments break gitignore patterns, so the comment lives on its own line.
+**/*.task
+**/*.tflite
 **/transcript.json
 **/vad.json
 **/cuts_proposed.json

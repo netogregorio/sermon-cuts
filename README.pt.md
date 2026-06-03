@@ -66,16 +66,30 @@ leia um `SKILL.md` e rode scripts.
 
 ## Instalar — escolha seu caminho
 
+Roda em **macOS, Linux e Windows** (Windows nativo desde a v0.2.0 — sem
+necessidade de WSL).
+
 ### 🟢 Mais fácil: um comando, qualquer terminal
 
+**macOS / Linux** (bash):
 ```bash
 curl -fsSL https://onetogregorio.github.io/sermon-cuts/install.sh | bash
 ```
 
-Detecta seu sistema, instala ffmpeg/yt-dlp/Python, clona o repo, cria um
-venv, symlinka a skill em `~/.claude/skills/sermon-cuts/`, opcionalmente
-configura Groq + Outfit, e roda um health check no final. **Pode rodar
-de novo sem medo** — não sobrescreve nada que já existe.
+**Windows** (PowerShell ou cmd):
+```cmd
+winget install Python.Python.3.12 Git.Git
+git clone https://github.com/onetogregorio/sermon-cuts %USERPROFILE%\code\sermon-cuts
+%USERPROFILE%\code\sermon-cuts\scripts\install.bat
+```
+
+Os dois instaladores detectam seu sistema, instalam ffmpeg/yt-dlp/Python
+(automático em macOS/Linux via Homebrew/apt; instruções printadas no
+Windows), clonam o repo, criam venv Python, linkam a skill em
+`~/.claude/skills/sermon-cuts/` (symlink → junction → fallback de copy
+no Windows), opcionalmente configuram Groq + Outfit e rodam um health
+check no final. **Pode rodar de novo sem medo** — não sobrescreve nada
+que já existe.
 
 ### 🟡 Através do seu editor de IA (Claude Code, Cursor, Codex…)
 
@@ -117,6 +131,10 @@ docker run --rm \
 
 ## Workflow do dia-a-dia — os quatro comandos que importam
 
+macOS/Linux usa `pipeline.sh`, Windows usa `pipeline.bat`. Os dois são
+wrappers finos do `pipeline.py` cross-platform — invoque o que combinar
+com seu shell.
+
 ```bash
 pipeline.sh doctor                              # health check (rode esse primeiro)
 pipeline.sh <url-ou-mp4>                        # ingest + transcreve + propõe cortes
@@ -124,15 +142,31 @@ pipeline.sh review <slug>                       # ↑↓ + SPACE + ENTER pra esc
 pipeline.sh ui                                  # abre a UI web em localhost:7860
 ```
 
-Ou, sem terminal nenhum:
-
-```bash
-pipeline.sh ui                                  # drag-drop, checkboxes, downloads
+```cmd
+REM Equivalente Windows — mesmas flags, mesmo comportamento
+pipeline.bat doctor
+pipeline.bat <url-ou-mp4>
+pipeline.bat review <slug>
 ```
 
-> 💡 **Sem chave Groq?** Deixa o `--provider=auto` escolher `local`
-> (usa faster-whisper offline, sem API key, ~1× realtime em Apple Silicon)
-> ou `youtube` (auto-captions, instantâneo, qualidade um pouco menor).
+### Render qualidade de entrega
+
+Pra entrega pra cliente, adiciona as flags de qualidade:
+
+```bash
+pipeline.sh --render-cut 3 --slug meu_sermao \
+            --quality max --codec hevc --llm-scrub
+```
+
+- `--quality max` — libx264/libx265 -preset slower + filtros de denoise + sharpen
+- `--codec hevc` — H.265 Main 10 (~40% menos arquivo na mesma qualidade visível)
+- `--llm-scrub` — review LLM do SRT inteiro (pega typos que o scrub baseado em regras perde)
+- `--target shorts` — re-capa o corte em 60s pra compatibilidade com YouTube Shorts
+
+> 💡 **Sem chave Groq?** O padrão agora é `--provider=youtube` quando
+> ingerindo uma URL do YouTube (grátis, instantâneo, preciso o bastante
+> — o scrub LLM pega palavras dropadas). Arquivos locais preferem Groq
+> se `GROQ_API_KEY` estiver setada, senão caem pro faster-whisper local.
 
 ---
 
@@ -154,9 +188,10 @@ Se preferir rodar na mão:
 Os cortes finais aparecem em:
 
 ```
-~/Movies/SermonCuts/renders/<slug>/01-cut_slug.mp4   # macOS
-~/.local/share/sermon-cuts/renders/<slug>/...         # Linux
-~/SermonCuts/renders/<slug>/...                       # outros
+~/Movies/SermonCuts/renders/<slug>/01-cut_slug.mp4    # macOS
+~/.local/share/sermon-cuts/renders/<slug>/...          # Linux
+%USERPROFILE%\SermonCuts\renders\<slug>\...            # Windows
+~/SermonCuts/renders/<slug>/...                        # outros
 ```
 
 (Sobrescreva com `SERMON_CUTS_DATA_DIR=/seu/caminho` pra colocar tudo em outro lugar.)
@@ -186,7 +221,7 @@ Cada etapa é um script independente — combine como quiser, ou só roda
 | `06_build_srt.py` | Legendas brand-style: 3-4 palavras, dourado, sentence case |
 | `07_render_track.py` | Reenquadre vertical com tracking facial + legenda queimada |
 | `08_audio_normalize.py` | Áudio nivelado a -14 LUFS (padrão Reels/TikTok) |
-| `pipeline.sh` | Um comando pra rodar tudo |
+| `pipeline.py` / `pipeline.sh` / `pipeline.bat` | Um comando pra rodar tudo (cross-platform) |
 
 Walkthrough completo em [`docs/PIPELINE.pt.md`](docs/PIPELINE.pt.md).
 Instalação em [`docs/INSTALL.pt.md`](docs/INSTALL.pt.md).
@@ -201,7 +236,16 @@ brew install ffmpeg yt-dlp python@3.12
 pip install -r requirements.txt
 ```
 
-(Instruções de Linux e setup opcional da API Groq em [`docs/INSTALL.pt.md`](docs/INSTALL.pt.md).)
+```cmd
+REM Windows
+winget install Python.Python.3.12 Git.Git
+REM ffmpeg + yt-dlp: instala via winget, scoop ou chocolatey (sua escolha)
+winget install Gyan.FFmpeg yt-dlp.yt-dlp
+pip install -r requirements.txt
+```
+
+(Instruções de Linux, walkthrough completo de Windows e setup opcional da
+API Groq em [`docs/INSTALL.pt.md`](docs/INSTALL.pt.md).)
 
 ---
 
