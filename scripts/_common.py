@@ -76,23 +76,47 @@ def resolve_ffmpeg(config_value: str | None = None) -> str:
     Priority:
       1. ``FFMPEG_BIN`` environment variable — explicit user override.
       2. ``config_value`` — usually ``CFG["ffmpeg_bin"]`` from render_defaults.yaml.
-      3. ``/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg`` — Homebrew's full build,
-         which (unlike the default ``ffmpeg`` formula since v8.x) includes
-         libass. Required for the ``subtitles`` filter used by ``07_render_track``.
-      4. ``"ffmpeg"`` — fall back to whatever is on PATH.
+      3. ``/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg`` — Homebrew's full build
+         on Apple Silicon. Skipped on non-Darwin systems (path doesn't exist).
+      4. ``shutil.which("ffmpeg")`` — PATH lookup, cross-platform. Picks up
+         ``ffmpeg``/``ffmpeg.exe`` from anywhere on PATH on macOS, Linux,
+         and Windows (including the Microsoft Store install and chocolatey).
+      5. Common Windows install locations (last-ditch fallback): users who
+         downloaded ffmpeg manually and didn't add it to PATH still get
+         picked up here.
+      6. ``"ffmpeg"`` — naked fallback; subprocess will fail with a clear
+         error if it doesn't resolve.
 
-    Symptom this was added for: ``[AVFilterGraph] No such filter: 'subtitles'``
+    Symptom #3 was added for: ``[AVFilterGraph] No such filter: 'subtitles'``
     from Homebrew's default ffmpeg 8.x build (libass was dropped). Either set
     ``FFMPEG_BIN=/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg`` in your shell, or
     install ``brew install ffmpeg-full`` and we'll auto-detect it.
     """
+    import shutil
+
     if env := os.environ.get("FFMPEG_BIN"):
         return env
     if config_value:
         return config_value
+    # macOS Homebrew full build — libass-enabled, preferred when available.
     hb_full = Path("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg")
     if hb_full.exists():
         return str(hb_full)
+    # Cross-platform PATH lookup — handles Linux distros, Windows installs,
+    # macOS non-Homebrew installs (MacPorts, conda, manual). shutil.which
+    # respects PATHEXT on Windows so "ffmpeg" resolves to "ffmpeg.exe".
+    if which := shutil.which("ffmpeg"):
+        return which
+    # Last-ditch: common Windows install locations users hit when they
+    # download ffmpeg.exe but forget to add the bin dir to PATH.
+    if platform.system() == "Windows":
+        for candidate in (
+            Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
+            Path(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"),
+            Path(r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe"),
+        ):
+            if candidate.exists():
+                return str(candidate)
     return "ffmpeg"
 
 
