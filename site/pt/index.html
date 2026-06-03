@@ -144,22 +144,37 @@
         <p class="kicker">Instalar — escolha seu caminho</p>
         <h2>De zero a primeiro corte em <span class="gold">menos de 5 minutos.</span></h2>
         <p class="section-lede">
-          Três jeitos de entrar. O primeiro se você tem terminal, o segundo
-          se você vive num editor de IA, o terceiro pra Linux/Windows.
+          Três jeitos de entrar. O primeiro se você tem terminal (nativo em
+          macOS, Linux e Windows), o segundo se você vive num editor de IA,
+          o terceiro se preferir não instalar deps no host.
         </p>
 
         <div class="install-paths">
-          <div class="install-card">
+          <div class="install-card" data-install-tabs>
             <div class="install-card-head">
               <span class="install-icon">🟢</span>
               <div>
                 <h3>Um comando no terminal</h3>
-                <p>Recomendado. Funciona em qualquer shell macOS ou Linux.</p>
+                <p>Recomendado. Nativo em macOS, Linux e Windows — sem WSL.</p>
               </div>
             </div>
-            <div class="code-card">
-              <button class="copy-btn" data-copy="install-curl">Copiar</button>
-              <pre id="install-curl">curl -fsSL https://onetogregorio.github.io/sermon-cuts/install.sh | bash</pre>
+            <div class="install-tabs" role="tablist">
+              <button type="button" class="install-tab is-active" data-install-target="install-unix" role="tab" aria-selected="true">macOS / Linux</button>
+              <button type="button" class="install-tab" data-install-target="install-windows" role="tab" aria-selected="false">Windows</button>
+            </div>
+            <div class="install-tab-panel is-active" id="install-unix-panel">
+              <div class="code-card">
+                <button class="copy-btn" data-copy="install-unix">Copiar</button>
+                <pre id="install-unix">curl -fsSL https://onetogregorio.github.io/sermon-cuts/install.sh | bash</pre>
+              </div>
+            </div>
+            <div class="install-tab-panel" id="install-windows-panel">
+              <div class="code-card">
+                <button class="copy-btn" data-copy="install-windows">Copiar</button>
+                <pre id="install-windows">winget install Python.Python.3.12 Git.Git
+git clone https://github.com/onetogregorio/sermon-cuts %USERPROFILE%\code\sermon-cuts
+%USERPROFILE%\code\sermon-cuts\scripts\install.bat</pre>
+              </div>
             </div>
           </div>
 
@@ -182,15 +197,14 @@
               <button class="copy-btn" data-copy="install-prompt">Copiar</button>
               <pre id="install-prompt">Instala a skill Sermon Cuts (https://github.com/onetogregorio/sermon-cuts) na minha máquina. Me guia pelos passos abaixo e para se algum falhar:
 
-1. Detecta meu sistema (macOS ou Linux). No macOS, garante que o Homebrew está instalado.
-2. Instala as dependências de sistema: ffmpeg (com libass), yt-dlp, Python 3.12+.
-3. Clona o repo pra ~/code/sermon-cuts (ou me pergunta onde colocar).
-4. Cria um venv Python dentro do repo e roda pip install -r requirements.txt.
-5. Symlinka scripts/, config/, prompts/ pra ~/.claude/skills/sermon-cuts/ e copia o SKILL.md pra lá também.
-6. Me pergunta se quero transcrição melhor via Groq Whisper. Se sim, abre https://console.groq.com/keys, pede pra eu colar a chave e adiciona GROQ_API_KEY=... no ~/.env.
-7. Me pergunta se quero a fonte da marca Outfit Black (https://fonts.google.com/specimen/Outfit). Se sim, baixa e instala na minha pasta de fontes.
-8. Roda ./scripts/pipeline.sh doctor pra confirmar que a skill está pronta.
-9. Me dá um exemplo de uma linha de como cortar meu primeiro sermão.
+1. Detecta meu sistema (macOS, Linux ou Windows). No macOS usa Homebrew (instala se faltar), no Linux usa apt/dnf/pacman, no Windows usa winget.
+2. Instala as dependências de sistema: ffmpeg (com libass), yt-dlp, Python 3.12+, Git. Os comandos mudam por OS — usa o certo.
+3. Clona o repo pra ~/code/sermon-cuts no Unix ou %USERPROFILE%\code\sermon-cuts no Windows (ou me pergunta onde colocar).
+4. Roda scripts/install.sh no macOS/Linux ou scripts\install.bat no Windows — ele cria o venv, instala requirements e wires a skill em ~/.claude/skills/sermon-cuts/.
+5. Me pergunta se quero transcrição melhor via Groq Whisper. Se sim, abre https://console.groq.com/keys, pede pra eu colar a chave e adiciona GROQ_API_KEY=... no ~/.env (ou %USERPROFILE%\.env no Windows).
+6. Me pergunta se quero a fonte da marca Outfit Black (https://fonts.google.com/specimen/Outfit). Se sim, baixa e instala na minha pasta de fontes.
+7. Roda ./scripts/pipeline.sh doctor (Unix) ou scripts\pipeline.bat doctor (Windows) pra confirmar que a skill está pronta.
+8. Me dá um exemplo de uma linha de como cortar meu primeiro sermão.
 
 Reporta sucesso ou o passo que falhou no final.</pre>
             </div>
@@ -201,7 +215,7 @@ Reporta sucesso ou o passo que falhou no final.</pre>
               <span class="install-icon">🐳</span>
               <div>
                 <h3>Docker</h3>
-                <p>Linux, Windows, ou onde pip dá problema. Sem deps no host.</p>
+                <p>Builds reproduzíveis, CI, ou onde você preferir não instalar deps no host.</p>
               </div>
             </div>
             <div class="code-card">
@@ -225,6 +239,10 @@ Reporta sucesso ou o passo que falhou no final.</pre>
           <div><code>pipeline.sh review &lt;slug&gt;</code><p>UI no terminal pra escolher</p></div>
           <div><code>pipeline.sh ui</code><p>UI web em localhost:7860</p></div>
         </div>
+        <p class="commands-note">
+          No Windows, troque <code>pipeline.sh</code> por <code>pipeline.bat</code> — mesmas flags.
+          Flags de qualidade de entrega como <code>--quality max --codec hevc --llm-scrub</code> compõem em cima.
+        </p>
       </div>
     </section>
 
@@ -265,6 +283,21 @@ Reporta sucesso ou o passo que falhou no final.</pre>
             <p><code>./scripts/pipeline.sh &lt;url&gt;</code> faz ingest,
               transcrição, detecção de pausas com VAD, scrub do SRT e render
               limpo com barra de progresso ao vivo.</p>
+          </article>
+          <article class="card">
+            <div class="icon">⊞</div>
+            <h3>Multiplataforma, nativo</h3>
+            <p>macOS, Linux e Windows — todos nativos, sem WSL. O pipeline inteiro
+              é Python portável; <code>pipeline.bat</code> no Windows espelha
+              <code>pipeline.sh</code> flag por flag.</p>
+          </article>
+          <article class="card">
+            <div class="icon">★</div>
+            <h3>Qualidade de entrega numa flag</h3>
+            <p><code>--quality max --codec hevc</code> exporta HEVC 10-bit Main 10
+              com denoise + sharpen. <code>--llm-scrub</code> pega erros de legenda
+              que heurística não pega. <code>--target shorts</code> afina pra cada
+              plataforma.</p>
           </article>
           <article class="card">
             <div class="icon">⎈</div>
@@ -391,6 +424,24 @@ Reporta sucesso ou o passo que falhou no final.</pre>
         const old = btn.innerText;
         btn.innerText = 'Copiado ✓';
         setTimeout(() => (btn.innerText = old), 1500);
+      });
+    });
+
+    document.querySelectorAll('[data-install-tabs]').forEach((root) => {
+      const tabs = root.querySelectorAll('.install-tab');
+      const panels = root.querySelectorAll('.install-tab-panel');
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+          const target = tab.dataset.installTarget;
+          tabs.forEach((t) => {
+            const active = t === tab;
+            t.classList.toggle('is-active', active);
+            t.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          panels.forEach((p) => {
+            p.classList.toggle('is-active', p.id === `${target}-panel`);
+          });
+        });
       });
     });
   </script>

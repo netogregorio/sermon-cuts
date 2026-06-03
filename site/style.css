@@ -533,6 +533,61 @@ section h2 {
   line-height: 1.6;
 }
 
+/* Install card tabs (e.g. macOS/Linux vs Windows). */
+.install-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  background: rgba(25, 42, 86, 0.06);
+  border-radius: 10px;
+  padding: 4px;
+  width: fit-content;
+}
+
+.install-tab {
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: 'Outfit', sans-serif;
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: -0.005em;
+  padding: 6px 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.install-tab:hover {
+  color: var(--navy);
+}
+
+.install-tab.is-active {
+  background: var(--paper);
+  color: var(--navy);
+  box-shadow: 0 1px 3px rgba(25, 42, 86, 0.12);
+}
+
+.install-tab-panel {
+  display: none;
+}
+
+.install-tab-panel.is-active {
+  display: block;
+}
+
+.commands-note {
+  margin: 12px 0 0;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.commands-note code {
+  font-size: 0.78rem;
+  background: rgba(25, 42, 86, 0.06);
+}
+
 .commands-title {
   margin: 48px 0 18px;
   text-align: center;

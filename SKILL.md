@@ -28,17 +28,19 @@ Em `<project>/edit/cuts/<slug_da_mensagem>/`:
 ```
 
 Cada cut é:
-- **Vertical 1080×1920 @ 30fps** (scale + crop com tracking suave da face)
+- **Vertical 1080×1920 @ 30fps** (scale Lanczos + crop com face tracking 5fps + rule-of-thirds vertical `face_y_target=0.40`)
 - **Legenda burned-in** brand-style (Outfit Black, gold `#fbc531`, outline preto 0.8, rodapé MarginV=50, 3-4 palavras/linha, sentence case)
 - **Áudio normalizado** a -14 LUFS (padrão Insta/TikTok/Reels)
-- **H.264 CRF 18 preset slow** (qualidade alta, arquivo razoável)
+- **Encoder configurável**:
+  - default `--quality auto --codec h264` → h264_videotoolbox 8M (Apple Silicon) / libx264 CRF 18 (resto)
+  - delivery `--quality max --codec hevc` → libx265 -preset slower -crf 20 + 10-bit Main 10 (yuv420p10le) + hqdn3d + unsharp + hvc1 tag
 
 ## Workflow (one-at-a-time mode — Neto prefere)
 
 ### Fase A — Ingest + análise (automática, ~1 min)
 
-1. **`scripts/01_ingest.py <url-or-path>`** — baixa via yt-dlp (1080p ou melhor) OU copia local pra `memory/messages/<slug>/source.mp4`
-2. **`scripts/02_transcribe.py`** — Groq Whisper-large word-level → `transcript.json`
+1. **`scripts/01_ingest.py <url-or-path>`** — baixa via yt-dlp (≥1080p, qualquer codec; aceita VP9/AV1 + 1440p/2160p) OU copia local pra `<sources>/<slug>/source.mp4`. ffprobe loga `source_quality` em `meta.json` + avisa se <1080p / <2Mbps / <24fps.
+2. **`scripts/02_transcribe.py`** — auto-pick: source YouTube → VTT auto-captions (grátis); local file → Groq Whisper-large se `GROQ_API_KEY` setado, senão faster-whisper local. Output: `transcript.json` word-level.
 3. **`scripts/03_vad_segments.py`** — silero-vad detecta pausas ≥0.8s → `vad.json` (fronteiras candidatas)
 
 ### Fase B — Proposta de cortes (LLM, ~30s)
@@ -46,15 +48,16 @@ Cada cut é:
 4. **Você (Claude) lê** `transcript.json` + `vad.json` e propõe cortes seguindo `prompts/propose_cuts.md`. Output: `cuts_proposed.json` com `[{n, slug, start, end, theme, hook, conclusion, coherence_score, depends_on}]`
 5. **Apresenta ao usuário** numa lista ranqueada por score. Ele escolhe quais aprovar.
 
-### Fase C — Render por cut aprovado (~30-60s cada)
+### Fase C — Render por cut aprovado (~30-60s default, ~45min --quality max --codec hevc)
 
 Pra cada cut aprovado:
-6. **`scripts/05_validate_cut.py`** — confirma final natural (sem "porque nós" truncado). Se inválido, ajusta extendendo até próxima pausa válida do VAD.
+6. **`scripts/05_validate_cut.py --target {all,shorts,reels,tiktok}`** — confirma final + início naturais. `forbid_endings` (mas/porque/então/quando/se/...) + `forbid_starts` (warn-only). Ajusta `end` extendendo até próxima pausa VAD se truncado.
 7. **`scripts/06_build_srt.py`** — gera SRT brand-style do segmento
-8. **`scripts/07_render_track.py`** — MediaPipe face detection (2 fps) + smoothing (2.5s moving avg) + crop dinâmico 1080×1920 → vertical sem legenda
-9. **Burn legenda** (ffmpeg + subtitles filter + force_style)
-10. **`scripts/08_audio_normalize.py`** — pyloudnorm -14 LUFS no áudio final
-11. **Salva** em `<project>/edit/cuts/<slug>/NN-cut_slug.mp4` e mostra preview pro Neto
+8. **`scripts/06b_scrub_srt.py`** — scrub heurístico OU `--full-llm-review` (manda SRT inteira + transcript word-level pro LLM, aplica TODOS os fixes — pega `paraa→para a`, `pentec→Pentecostes`, `na seu→no seu`, etc). Custo ~$0.01/cut.
+9. **`scripts/07_render_track.py --quality {auto,max} --codec {h264,hevc}`** — MediaPipe face+pose detection 5fps + smoothing 2.5s + scale Lanczos + rule-of-thirds Y + crop 1080×1920 + burn legenda + encode (videotoolbox auto / libx265 max). A/V sync via src_fps + ffmpeg fps filter.
+10. **`scripts/08_audio_normalize.py`** — ffmpeg loudnorm two-pass -14 LUFS + true-peak -1.5 dBTP
+11. **`scripts/09_trim_silences.py`** (opt-in via `trim_silences: true` no cut) — colapsa silêncios >2.5s
+12. **Salva** em `<renders>/<slug>/NN-cut_slug.mp4` e mostra preview pro Neto
 
 ### Fase D — Iteração
 
@@ -66,7 +69,7 @@ Se ele rejeitar/pedir mudança em um cut:
 ## Estrutura de arquivos
 
 ```
-~/.claude/skills/sermon-cuts/
+~/.claude/skills/sermon-cuts/           # macOS/Linux symlink; Windows junction
 ├── SKILL.md                 ← este arquivo
 ├── scripts/
 │   ├── 01_ingest.py
@@ -75,31 +78,38 @@ Se ele rejeitar/pedir mudança em um cut:
 │   ├── 04_propose_cuts.py   ← stub que chama Claude com prompt
 │   ├── 05_validate_cut.py
 │   ├── 06_build_srt.py
+│   ├── 06b_scrub_srt.py     ← lint + (opcional) full-llm-review
 │   ├── 07_render_track.py
 │   ├── 08_audio_normalize.py
-│   └── pipeline.sh          ← orquestrador end-to-end
+│   ├── 09_trim_silences.py
+│   ├── pipeline.py          ← orquestrador cross-platform
+│   ├── pipeline.sh          ← wrapper Unix (exec → pipeline.py)
+│   └── pipeline.bat         ← wrapper Windows
 ├── config/
-│   ├── force_style.txt
-│   ├── function_words_pt.txt
-│   └── render_defaults.yaml
+│   ├── render_defaults.yaml
+│   ├── style_presets/
+│   └── corrections_pt.txt
 ├── prompts/
-│   └── propose_cuts.md
+│   ├── propose_cuts.{md,pt.md,es.md}
+│   └── scrub_srt.{md,pt.md,es.md}
 └── memory/
     └── messages/
         └── <slug_mensagem>/
-            ├── source.mp4
             ├── transcript.json
             ├── vad.json
+            ├── meta.json    ← inclui source_quality + warnings
             ├── cuts_proposed.json
-            └── status.json     ← per-cut: proposed/approved/rendered/rejected
+            └── srts/NN-slug.srt
 ```
 
 ## Regras hard (não negociar com usuário)
 
-1. **Vertical 1080×1920**. Source horizontal → `scale=-2:1920,crop=1080:1920` com tracking dinâmico de X via MediaPipe. **Nunca** letterbox, **nunca** scale+pad com blur background.
+1. **Vertical 1080×1920**. Source horizontal → scale Lanczos + crop dinâmico (X via face/pose, Y via rule-of-thirds `face_y_target=0.40`). **Nunca** letterbox, **nunca** scale+pad com blur background.
 2. **Legenda sentence case**, jamais UPPERCASE.
 3. **Outline preto 0.8**, FontSize 16, MarginV 50. Não inventar.
 4. **Cut precisa ter arco completo**: hook → desenvolvimento → conclusão. Se LLM não consegue identificar conclusão clara, rejeita o cut.
+5. **Duração 60–90s** default (sweet spot pra Reels/TikTok). `--target shorts` re-cap em 60s (YouTube Shorts hard cap).
+6. **Scrub teológico**: durante limpeza de SRT (heurístico OU LLM), NUNCA altera sentido teológico ou intenção do orador. Só conserta erro óbvio de transcrição.
 
 ## Decisões que devem ser deferidas ao usuário (não automatizar)
 
@@ -108,6 +118,8 @@ Se ele rejeitar/pedir mudança em um cut:
 - Override de tema/slug do cut
 
 ## Comandos de invocação típicos
+
+Use `pipeline.sh` (macOS/Linux), `pipeline.bat` (Windows), ou `python pipeline.py` (qualquer OS) — mesma surface de flags.
 
 ```bash
 # Pipeline completa, modo interativo (default)
@@ -118,6 +130,13 @@ Se ele rejeitar/pedir mudança em um cut:
 
 # Renderizar cortes específicos já propostos
 ~/.claude/skills/sermon-cuts/scripts/pipeline.sh --render-cuts 2,4,7 --slug vinde_a_mim
+
+# Delivery-grade pra cliente: max quality + HEVC + LLM scrub completo
+~/.claude/skills/sermon-cuts/scripts/pipeline.sh --render-cut 3 --slug vinde_a_mim \
+  --quality max --codec hevc --llm-scrub
+
+# YouTube Shorts (re-cap em 60s)
+~/.claude/skills/sermon-cuts/scripts/pipeline.sh --render-cuts 1,2 --slug vinde_a_mim --target shorts
 
 # Reaplicar só legenda (sem retracking) num cut já feito
 ~/.claude/skills/sermon-cuts/scripts/pipeline.sh --reburn-srt 2 --slug vinde_a_mim
