@@ -12,6 +12,11 @@
 # Render flags:
 #   --skip-scrub        skip the 06b SRT lint pass (useful for CI / batch
 #                       runs where no human is around to review suspects)
+#   --llm-scrub         use --full-llm-review on the SRT — sends every cue
+#                       + per-cue transcript context to the LLM and applies
+#                       all returned fixes. Catches errors the rule-based
+#                       heuristics miss. Needs ANTHROPIC_API_KEY (preferred)
+#                       or GROQ_API_KEY. ~$0.01 per cut on Claude Haiku 4.5.
 #   --target T          delivery target: all (default, 60-90s), shorts
 #                       (re-caps at 60s for YouTube Shorts compatibility),
 #                       reels, tiktok. Forwarded to 04_propose_cuts and
@@ -65,6 +70,7 @@ SKIP_SCRUB=0
 TARGET="all"
 QUALITY="auto"
 CODEC="h264"
+LLM_SCRUB=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --reburn-srt)   MODE="reburn"; CUTS="$2"; shift 2;;
     --slug)         SLUG="$2"; shift 2;;
     --skip-scrub)   SKIP_SCRUB=1; shift;;
+    --llm-scrub)    LLM_SCRUB=1; shift;;
     --target)       TARGET="$2"; shift 2;;
     --quality)      QUALITY="$2"; shift 2;;
     --codec)        CODEC="$2"; shift 2;;
@@ -99,6 +106,15 @@ scrub() {
   local idx="$1"
   if [[ "$SKIP_SCRUB" -eq 1 ]]; then
     echo "→ cut #$idx: scrub SRT [skipped — --skip-scrub]"
+    return
+  fi
+  if [[ "$LLM_SCRUB" -eq 1 ]]; then
+    # Full LLM review: sends entire SRT to the LLM. Catches errors the
+    # rule-based heuristics miss (joined-word typos, wrong articles,
+    # missing letters, lowercase proper nouns, filler chains). Costs
+    # ~$0.01 per cut on Claude Haiku 4.5.
+    echo "→ cut #$idx: scrub SRT [LLM full-review]"
+    $PY "$SCRIPTS/06b_scrub_srt.py" "$SLUG" "$idx" --full-llm-review
     return
   fi
   echo "→ cut #$idx: scrub SRT (review suspeitos)"
