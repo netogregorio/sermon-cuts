@@ -18,10 +18,33 @@ audio:
   target_lufs: -14.0   # padrão Insta/TikTok/Reels
 
 tracking:
-  sample_fps: 2.0       # detecções por segundo
+  # Detection sampling rate. 2 fps (old default) left ~500ms gaps between
+  # detections — a fast gesture or step could leave the crop visibly
+  # behind the preacher for that half-second. 5 fps closes those gaps:
+  # the smoothing window still hides individual sample jitter, but the
+  # tracking now reacts within ~200ms of any real movement.
+  # Cost: ~2-3s extra per cut on Apple Silicon (MediaPipe runs at hardware
+  # speed). Negligible compared to the visual gain.
+  sample_fps: 5.0
   smooth_window_s: 2.5  # janela de média móvel
   detector: mediapipe   # mediapipe | haar
   min_face_size: 80
+  # Vertical framing target. 0.40 puts the face center at 40% of the
+  # output height — close to the rule-of-thirds horizon, which feels
+  # more cinematic than the dead-center default older versions used.
+  # Set to null to disable vertical adjustment (renderer just preserves
+  # whatever Y framing the source camera used — useful if your stage
+  # cam is already well-composed). Range: (0.0, 1.0). Typical values:
+  #   0.33 — strong rule-of-thirds, lots of headroom above the face
+  #   0.40 — gentle upward bias (default)
+  #   0.50 — face centered vertically
+  face_y_target: 0.40
+  # Y headroom budget for the rule-of-thirds adjustment. Source is
+  # scaled to OUT_H * (1 + headroom) tall, giving the crop window
+  # vertical slack to position the face. 0.25 = 25% extra (480px at
+  # OUT_H=1920); higher = more correction for badly-framed sources but
+  # more memory used per frame.
+  vertical_headroom: 0.25
 
 subtitle:
   min_words: 3

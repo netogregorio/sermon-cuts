@@ -139,29 +139,62 @@ def _pose_centerpoint_x(pose_result, frame_w: int) -> float | None:
     return midpoint_norm * frame_w
 
 
+def _pose_face_y(pose_result, frame_h: int) -> float | None:
+    """Estimate face-center Y from pose landmarks. Prefer nose (landmark 0),
+    fall back to a shoulder-Y offset (~12% of frame above shoulders) when
+    the nose landmark is missing or low-confidence.
+
+    Used as a fallback for the Y axis only when the face detector misses.
+    Less accurate than the face bbox center, but stable enough that the
+    smoothing window absorbs the residual jitter."""
+    if not pose_result.pose_landmarks:
+        return None
+    lms = pose_result.pose_landmarks[0]
+    if not lms:
+        return None
+    nose = lms[0] if len(lms) > 0 else None
+    if nose is not None and 0.0 <= nose.y <= 1.0:
+        return float(nose.y) * frame_h
+    if len(lms) > 12:
+        # Shoulder midpoint minus ~12% of frame height puts us near face center.
+        shoulder_y = (lms[11].y + lms[12].y) / 2.0
+        return max(0.0, float(shoulder_y - 0.12) * frame_h)
+    return None
+
+
 def sample_face_positions(
     src: Path, seg_start: float, seg_end: float, src_w: int, src_h: int
-) -> list[tuple[float, float]]:
-    """Return [(t_abs, cx_src)] sampled at SAMPLE_FPS.
+) -> list[tuple[float, float, float]]:
+    """Return [(t_abs, cx_src, cy_src)] sampled at SAMPLE_FPS.
+
+    Both X and Y are tracked so the renderer can vertically position the
+    face (rule-of-thirds framing) instead of just preserving whatever Y
+    the source camera framed at. The Y component is used by
+    ``render_cut_singlepass`` when ``tracking.face_y_target`` is set.
 
     Detection cascade (per sample, in order):
       1. MediaPipe BlazeFace short-range. Picks the largest detected face.
-      2. MediaPipe Pose Landmarker. Uses shoulder midpoint when no face
-         is found — useful when the preacher looks down to read the Bible
-         or turns their head away from camera.
+      2. MediaPipe Pose Landmarker. Uses shoulder midpoint (X) + nose (Y)
+         when no face is found — useful when the preacher looks down to
+         read the Bible or turns their head away from camera.
       3. OpenCV Haar cascade. Final fallback when MediaPipe fails to load
          (e.g., on a system where the model download didn't make it).
-      4. ``last_cx``. If everything fails for this sample, hold the most
-         recent position so the trajectory doesn't jump back to center.
+      4. ``(last_cx, last_cy)``. If everything fails for this sample, hold
+         the most recent position so the trajectory doesn't jump back.
 
     Going through this whole cascade per sample is cheap because we only
-    sample at TRK["sample_fps"] (2 fps default), and the pose detector
+    sample at TRK["sample_fps"] (5 fps default), and the pose detector
     bails fast when no person is in frame.
     """
     import cv2
 
-    samples: list[tuple[float, float]] = []
+    samples: list[tuple[float, float, float]] = []
     last_cx = src_w / 2.0
+    # Default Y is biased slightly above center because sermon cameras
+    # virtually always frame the speaker in the upper half of the source
+    # frame. This is only used until the first detection lands; after
+    # that, ``last_cy`` is whatever the detector saw.
+    last_cy = src_h * 0.40
     n_face = 0
     n_pose = 0
     n_haar = 0
@@ -216,15 +249,21 @@ def sample_face_positions(
                 )
                 bb = best.bounding_box
                 last_cx = float(bb.origin_x + bb.width / 2.0)
+                last_cy = float(bb.origin_y + bb.height / 2.0)
                 n_face += 1
                 found = True
             elif pose_detector is not None:
                 # Face missed → try pose. Shoulder midpoint is a stable
-                # centerpoint when the head is down/turned.
+                # centerpoint when the head is down/turned; nose Y (or a
+                # shoulder-offset fallback) gives a reasonable face-center
+                # Y for the rule-of-thirds adjustment.
                 pose_result = pose_detector.detect(mp_img)
                 pose_cx = _pose_centerpoint_x(pose_result, src_w)
                 if pose_cx is not None:
                     last_cx = pose_cx
+                    pose_cy = _pose_face_y(pose_result, src_h)
+                    if pose_cy is not None:
+                        last_cy = pose_cy
                     n_pose += 1
                     found = True
         else:
@@ -238,12 +277,13 @@ def sample_face_positions(
             if len(faces) > 0:
                 x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
                 last_cx = x + w / 2.0
+                last_cy = y + h / 2.0
                 n_haar += 1
                 found = True
 
         if not found:
             n_hold += 1
-        samples.append((t, last_cx))
+        samples.append((t, last_cx, last_cy))
         t += dt
     cap.release()
     if detector is not None:
@@ -260,32 +300,39 @@ def sample_face_positions(
     return samples
 
 
-def smooth_trajectory(samples: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """Moving average over SMOOTH_WINDOW_S seconds."""
+def smooth_trajectory(
+    samples: list[tuple[float, float, float]],
+) -> list[tuple[float, float, float]]:
+    """Moving average over SMOOTH_WINDOW_S seconds on X and Y independently."""
     import statistics
 
     win = max(1, int(round(TRK["smooth_window_s"] * TRK["sample_fps"])))
-    smoothed: list[tuple[float, float]] = []
-    for i, (ta, _cx) in enumerate(samples):
+    smoothed: list[tuple[float, float, float]] = []
+    for i in range(len(samples)):
+        ta = samples[i][0]
         lo = max(0, i - win // 2)
         hi = min(len(samples), i + win // 2 + 1)
-        smoothed.append((ta, statistics.mean(p[1] for p in samples[lo:hi])))
+        mx = statistics.mean(p[1] for p in samples[lo:hi])
+        my = statistics.mean(p[2] for p in samples[lo:hi])
+        smoothed.append((ta, mx, my))
     return smoothed
 
 
-def cx_at(smoothed: list[tuple[float, float]], t_abs: float) -> float:
-    """Linear interp."""
+def pos_at(
+    smoothed: list[tuple[float, float, float]], t_abs: float
+) -> tuple[float, float]:
+    """Linear interp of (cx, cy) at time t_abs."""
     if t_abs <= smoothed[0][0]:
-        return smoothed[0][1]
+        return (smoothed[0][1], smoothed[0][2])
     if t_abs >= smoothed[-1][0]:
-        return smoothed[-1][1]
+        return (smoothed[-1][1], smoothed[-1][2])
     for i in range(len(smoothed) - 1):
-        t0, x0 = smoothed[i]
-        t1, x1 = smoothed[i + 1]
+        t0, x0, y0 = smoothed[i]
+        t1, x1, y1 = smoothed[i + 1]
         if t0 <= t_abs <= t1:
             f = (t_abs - t0) / (t1 - t0) if t1 > t0 else 0
-            return x0 + f * (x1 - x0)
-    return smoothed[-1][1]
+            return (x0 + f * (x1 - x0), y0 + f * (y1 - y0))
+    return (smoothed[-1][1], smoothed[-1][2])
 
 
 def render_cut_singlepass(
@@ -295,6 +342,7 @@ def render_cut_singlepass(
     out_video: Path,
     srt: Path | None = None,
     quality: str = "auto",
+    codec: str = "h264",
 ) -> None:
     """Render a vertical cut in ONE ffmpeg pass.
 
@@ -324,7 +372,21 @@ def render_cut_singlepass(
     cap = cv2.VideoCapture(str(src))
     src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"  source {src_w}x{src_h}", file=sys.stderr)
+    # CRITICAL: the source FPS drives the read loop, NOT OUT_FPS.
+    # Symptom this guards against: source at 23.976 fps + OUT_FPS=30 used
+    # to make the loop read 1950 source frames (for a 65s cut) but pipe
+    # them as 30fps to ffmpeg, meaning ffmpeg saw 65s of video against
+    # 65s of audio while the video actually contained 81.3s of source
+    # content (1950/23.976) — audio drifted ahead of video at ~1.25x,
+    # producing visible desync from the first few seconds onward.
+    # The fix: read at the source's native rate, pipe at the source's
+    # native rate, then let the ffmpeg `fps={OUT_FPS}` filter handle
+    # the conversion to the output rate. ffmpeg does proper PTS-based
+    # duplication/decimation; A/V stays aligned because pts and audio
+    # share the same time base.
+    src_fps_raw = cap.get(cv2.CAP_PROP_FPS)
+    src_fps = float(src_fps_raw) if src_fps_raw and src_fps_raw > 0 else float(OUT_FPS)
+    print(f"  source {src_w}x{src_h} @ {src_fps:.3f} fps", file=sys.stderr)
 
     print(f"  pass 1: sampling face positions @ {TRK['sample_fps']} fps...", file=sys.stderr)
     samples = sample_face_positions(src, seg_start, seg_end, src_w, src_h)
@@ -334,32 +396,103 @@ def render_cut_singlepass(
         file=sys.stderr,
     )
 
-    new_w = int(round(src_w * (OUT_H / src_h)))
-    new_w -= new_w % 2
-    print(
-        f"  scaled to {new_w}x{OUT_H}, crop window 1080w (range x∈[0,{new_w - OUT_W}])",
-        file=sys.stderr,
-    )
+    # Vertical framing: when face_y_target is set (default 0.40 = slight
+    # upward bias, rule-of-thirds-ish), scale the source taller than
+    # OUT_H to leave Y headroom, then crop with a vertical offset that
+    # puts the face center at face_y_target of the output height.
+    # When face_y_target is null, behavior matches the original code
+    # (scale to OUT_H, no Y shift, preserve whatever framing the source
+    # camera used).
+    face_y_target = TRK.get("face_y_target")
+    if face_y_target is not None:
+        face_y_target = float(face_y_target)
+        if not 0.0 < face_y_target < 1.0:
+            print(
+                f"  [warn] face_y_target={face_y_target} outside (0,1), disabling",
+                file=sys.stderr,
+            )
+            face_y_target = None
 
-    total_frames = int(round((seg_end - seg_start) * OUT_FPS))
+    if face_y_target is not None:
+        headroom = float(TRK.get("vertical_headroom", 0.25))
+        # 25% extra height by default — enough to shift the crop by ±240
+        # pixels at OUT_H=1920. Caps the cost at ~25% more memory for the
+        # scaled frame.
+        scale_h = int(round(OUT_H * (1.0 + headroom)))
+    else:
+        scale_h = OUT_H
+
+    new_w = int(round(src_w * (scale_h / src_h)))
+    new_w -= new_w % 2
+    scale_ratio = scale_h / src_h
+
+    if face_y_target is not None:
+        crop_y_max = scale_h - OUT_H
+        print(
+            f"  scaled to {new_w}x{scale_h}, crop {OUT_W}x{OUT_H} "
+            f"(x∈[0,{new_w - OUT_W}], y∈[0,{crop_y_max}], face_y≈{face_y_target:.2f})",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"  scaled to {new_w}x{scale_h}, crop {OUT_W}x{OUT_H} "
+            f"(x∈[0,{new_w - OUT_W}], preserving source Y framing)",
+            file=sys.stderr,
+        )
+
+    # Total frames to read from the source. MUST be computed from src_fps —
+    # using OUT_FPS here is the bug that caused A/V desync (see comment on
+    # src_fps detection above): it told the loop to read OUT_FPS×duration
+    # source frames, which on a 23.976fps source over-read content by
+    # ~25% and the resulting video raced ahead of the audio.
+    total_frames = int(round((seg_end - seg_start) * src_fps))
 
     # Build the filter graph. With an SRT we burn it on input 0; without,
-    # we pass the raw frames through unchanged.
-    vf_args: list[str] = []
+    # we pass the raw frames through unchanged. ``--quality max`` also
+    # inserts a light denoise + sharpen pass before the subtitles filter
+    # — useful on church-camera sources where high-ISO noise mushes the
+    # face and the upscale-to-1920 throws away some perceived sharpness.
+    # The fps={OUT_FPS} filter ALWAYS goes last to convert from the
+    # source's native rate (which is what we're piping in) to the
+    # canonical output rate. ffmpeg handles frame duplication/decimation
+    # via PTS, so the converted stream stays time-aligned with the audio.
+    vf_chain: list[str] = []
+    if quality == "max":
+        # hqdn3d: motion-aware spatial+temporal denoise. Numbers are
+        # luma-spatial, chroma-spatial, luma-temporal, chroma-temporal.
+        # 1.5/1.5/6/6 is light enough not to smear motion in talking
+        # heads but firm enough to kill the chroma fuzz that creeps in
+        # under stage lighting.
+        # unsharp: 5x5 kernel with 0.6 strength on luma — recovers the
+        # crispness lost in the Lanczos upscale without over-sharpening
+        # the subtitle outlines (which already have their own edges).
+        vf_chain.extend([
+            "hqdn3d=1.5:1.5:6:6",
+            "unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=0.6:"
+            "chroma_msize_x=5:chroma_msize_y=5:chroma_amount=0.0",
+        ])
     if srt is not None:
         # ffmpeg parses force_style as ASS key=value pairs separated by commas;
         # those commas need to be escaped inside the filter graph.
         style_esc = FORCE_STYLE.replace(",", r"\,")
-        # Single-quote the whole filter expression so the colon in ``subtitles=``
-        # isn't read as a filter separator.
-        vf_args = ["-vf", f"subtitles={srt}:force_style='{style_esc}'"]
+        vf_chain.append(f"subtitles={srt}:force_style='{style_esc}'")
+    # Frame-rate normalization comes last so subtitles + denoise filter
+    # on the original frames; duplication only happens at the very end.
+    # Skip when the input is already at OUT_FPS — saves the no-op pass.
+    if abs(src_fps - OUT_FPS) > 0.01:
+        vf_chain.append(f"fps={OUT_FPS}")
+    vf_args: list[str] = []
+    if vf_chain:
+        vf_args = ["-vf", f"{','.join(vf_chain)}"]
 
-    encoder_args = pick_video_encoder(VID, quality=quality)
+    encoder_args = pick_video_encoder(VID, quality=quality, codec=codec)
 
     cmd = [
         FFMPEG,
         "-y",
-        # Input 0: raw BGR frames piped from cv2 below.
+        # Input 0: raw BGR frames piped from cv2 below, declared at the
+        # source's native rate so the fps filter (if present) sees correct
+        # timestamps for duplication / decimation.
         "-f",
         "rawvideo",
         "-pix_fmt",
@@ -367,7 +500,7 @@ def render_cut_singlepass(
         "-s",
         f"{OUT_W}x{OUT_H}",
         "-r",
-        str(OUT_FPS),
+        f"{src_fps:.6f}",
         "-i",
         "-",
         # Input 1: source video, audio segment only.
@@ -426,16 +559,35 @@ def render_cut_singlepass(
         ok, frame = cap.read()
         if not ok:
             break
-        t_abs = seg_start + fi / OUT_FPS
-        scaled = cv2.resize(frame, (new_w, OUT_H), interpolation=cv2.INTER_AREA)
-        cx_src = cx_at(smoothed, t_abs)
-        cx_scaled = cx_src * (new_w / src_w)
+        # t_abs is the source time of frame ``fi`` — must use src_fps,
+        # NOT OUT_FPS. Same root-cause family as the A/V desync bug:
+        # at 23.976 fps source with OUT_FPS=30, fi/30 underestimated
+        # the actual time by ~20%, so pos_at() interpolated the face
+        # position for a time that was always behind where the speaker
+        # actually was, producing visibly laggy tracking.
+        t_abs = seg_start + fi / src_fps
+        # INTER_LANCZOS4 for the upscale (source heights are typically 1080
+        # or 1440; we always scale UP to scale_h>=OUT_H=1920). The old
+        # INTER_AREA was the wrong choice here — it's tuned for downscaling
+        # and softens high-frequency detail when used in reverse, which
+        # manifested as mushy text on screen and slightly out-of-focus
+        # faces. Lanczos costs ~5% more wall time but keeps the speaker's
+        # eyes / mic / background text sharp.
+        scaled = cv2.resize(frame, (new_w, scale_h), interpolation=cv2.INTER_LANCZOS4)
+        cx_src, cy_src = pos_at(smoothed, t_abs)
+        cx_scaled = cx_src * scale_ratio
         crop_x = int(round(cx_scaled - OUT_W / 2))
         crop_x = max(0, min(new_w - OUT_W, crop_x))
-        crop = scaled[:, crop_x : crop_x + OUT_W]
+        if face_y_target is not None:
+            cy_scaled = cy_src * scale_ratio
+            crop_y = int(round(cy_scaled - face_y_target * OUT_H))
+            crop_y = max(0, min(scale_h - OUT_H, crop_y))
+        else:
+            crop_y = 0
+        crop = scaled[crop_y : crop_y + OUT_H, crop_x : crop_x + OUT_W]
         ff.stdin.write(crop.tobytes())
         if fi % 90 == 0:
-            pbar.set_postfix_str(f"t={t_abs:.1f}s x={crop_x}", refresh=False)
+            pbar.set_postfix_str(f"t={t_abs:.1f}s x={crop_x} y={crop_y}", refresh=False)
         pbar.update(1)
     pbar.close()
     ff.stdin.close()
@@ -473,6 +625,18 @@ def main() -> None:
             "visual fidelity. Use for delivery-grade cuts going to client."
         ),
     )
+    ap.add_argument(
+        "--codec",
+        choices=["h264", "hevc"],
+        default="h264",
+        help=(
+            "video codec. 'h264' (default) is broadest compatibility. "
+            "'hevc' (H.265) gives ~40%% smaller files at the same visible "
+            "quality or noticeably crisper at the same bitrate. Reels/"
+            "TikTok/Shorts accept HEVC ingest since 2022. Pairs well with "
+            "--quality max for delivery masters."
+        ),
+    )
     args = ap.parse_args()
 
     msg_dir = MESSAGES / args.slug
@@ -508,10 +672,18 @@ def main() -> None:
 
     print(
         f"[render] cut #{n} '{slug}' {seg_start:.2f}-{seg_end:.2f}s "
-        f"(quality={args.quality})",
+        f"(quality={args.quality} codec={args.codec})",
         file=sys.stderr,
     )
-    render_cut_singlepass(src, seg_start, seg_end, final, srt=srt, quality=args.quality)
+    render_cut_singlepass(
+        src,
+        seg_start,
+        seg_end,
+        final,
+        srt=srt,
+        quality=args.quality,
+        codec=args.codec,
+    )
 
     print(
         json.dumps(

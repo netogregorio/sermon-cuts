@@ -12,6 +12,11 @@
 # Render flags:
 #   --skip-scrub        skip the 06b SRT lint pass (useful for CI / batch
 #                       runs where no human is around to review suspects)
+#   --llm-scrub         use --full-llm-review on the SRT — sends every cue
+#                       + per-cue transcript context to the LLM and applies
+#                       all returned fixes. Catches errors the rule-based
+#                       heuristics miss. Needs ANTHROPIC_API_KEY (preferred)
+#                       or GROQ_API_KEY. ~$0.01 per cut on Claude Haiku 4.5.
 #   --target T          delivery target: all (default, 60-90s), shorts
 #                       (re-caps at 60s for YouTube Shorts compatibility),
 #                       reels, tiktok. Forwarded to 04_propose_cuts and
@@ -19,6 +24,10 @@
 #   --quality Q         encoder quality: auto (default — picks hardware
 #                       encoder on Apple Silicon for speed) or max (forces
 #                       libx264 -preset slower -crf 17 for delivery cuts).
+#                       Forwarded to 07_render_track and 09_trim_silences.
+#   --codec C           video codec: h264 (default, broadest compat) or
+#                       hevc (~40%% smaller files at same visible quality
+#                       — Reels/TikTok/Shorts accept HEVC since 2022).
 #                       Forwarded to 07_render_track and 09_trim_silences.
 #
 # Source can be a YouTube URL or a local .mp4/.mov path.
@@ -60,6 +69,8 @@ CUTS=""
 SKIP_SCRUB=0
 TARGET="all"
 QUALITY="auto"
+CODEC="h264"
+LLM_SCRUB=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -69,8 +80,10 @@ while [[ $# -gt 0 ]]; do
     --reburn-srt)   MODE="reburn"; CUTS="$2"; shift 2;;
     --slug)         SLUG="$2"; shift 2;;
     --skip-scrub)   SKIP_SCRUB=1; shift;;
+    --llm-scrub)    LLM_SCRUB=1; shift;;
     --target)       TARGET="$2"; shift 2;;
     --quality)      QUALITY="$2"; shift 2;;
+    --codec)        CODEC="$2"; shift 2;;
     -h|--help)      usage;;
     *)              SOURCE="$1"; shift;;
   esac
@@ -93,6 +106,15 @@ scrub() {
   local idx="$1"
   if [[ "$SKIP_SCRUB" -eq 1 ]]; then
     echo "→ cut #$idx: scrub SRT [skipped — --skip-scrub]"
+    return
+  fi
+  if [[ "$LLM_SCRUB" -eq 1 ]]; then
+    # Full LLM review: sends entire SRT to the LLM. Catches errors the
+    # rule-based heuristics miss (joined-word typos, wrong articles,
+    # missing letters, lowercase proper nouns, filler chains). Costs
+    # ~$0.01 per cut on Claude Haiku 4.5.
+    echo "→ cut #$idx: scrub SRT [LLM full-review]"
+    $PY "$SCRIPTS/06b_scrub_srt.py" "$SLUG" "$idx" --full-llm-review
     return
   fi
   echo "→ cut #$idx: scrub SRT (review suspeitos)"
@@ -136,12 +158,12 @@ case "$MODE" in
       echo "→ cut #$IDX: build SRT"
       $PY "$SCRIPTS/06_build_srt.py" "$SLUG" "$IDX"
       scrub "$IDX"
-      echo "→ cut #$IDX: render with tracking + burn legenda (quality=$QUALITY)"
-      $PY "$SCRIPTS/07_render_track.py" "$SLUG" "$IDX" --quality "$QUALITY"
+      echo "→ cut #$IDX: render with tracking + burn legenda (quality=$QUALITY codec=$CODEC)"
+      $PY "$SCRIPTS/07_render_track.py" "$SLUG" "$IDX" --quality "$QUALITY" --codec "$CODEC"
       echo "→ cut #$IDX: normalize audio"
       $PY "$SCRIPTS/08_audio_normalize.py" "$SLUG" "$IDX" --in-place
       echo "→ cut #$IDX: trim long silences (opt-in)"
-      $PY "$SCRIPTS/09_trim_silences.py" "$SLUG" "$IDX" --quality "$QUALITY" --in-place
+      $PY "$SCRIPTS/09_trim_silences.py" "$SLUG" "$IDX" --quality "$QUALITY" --codec "$CODEC" --in-place
     done
     ;;
 
@@ -149,12 +171,12 @@ case "$MODE" in
     [[ -z "$SLUG" ]] && { echo "--slug required"; exit 1; }
     IFS=',' read -ra IDXS <<< "$CUTS"
     for IDX in "${IDXS[@]}"; do
-      echo "→ cut #$IDX: rebuild SRT + reburn (quality=$QUALITY)"
+      echo "→ cut #$IDX: rebuild SRT + reburn (quality=$QUALITY codec=$CODEC)"
       $PY "$SCRIPTS/06_build_srt.py" "$SLUG" "$IDX"
       scrub "$IDX"
-      $PY "$SCRIPTS/07_render_track.py" "$SLUG" "$IDX" --quality "$QUALITY"
+      $PY "$SCRIPTS/07_render_track.py" "$SLUG" "$IDX" --quality "$QUALITY" --codec "$CODEC"
       $PY "$SCRIPTS/08_audio_normalize.py" "$SLUG" "$IDX" --in-place
-      $PY "$SCRIPTS/09_trim_silences.py" "$SLUG" "$IDX" --quality "$QUALITY" --in-place
+      $PY "$SCRIPTS/09_trim_silences.py" "$SLUG" "$IDX" --quality "$QUALITY" --codec "$CODEC" --in-place
     done
     ;;
 esac

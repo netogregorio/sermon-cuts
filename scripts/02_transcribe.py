@@ -156,35 +156,104 @@ def _parse_vtt_file(vtt_path: Path) -> list[dict]:
 
 
 def transcribe_youtube(url: str, language: str, work_dir: Path) -> dict:
+    """Pull YouTube's own captions (creator-uploaded or auto-generated).
+
+    Previous implementation hit two bugs on the wild:
+
+      1. Asked yt-dlp for ``f"{language}.*,{language}"`` (e.g. ``pt.*,pt``),
+         which globbed pt-orig + pt + pt-PT + pt-BR. yt-dlp dutifully
+         downloaded each, and on the third request YouTube returned
+         HTTP 429 (rate limit). yt-dlp exited non-zero — fatal for the
+         caller — *after* two perfectly valid VTT files had already
+         landed on disk.
+
+      2. ``check=True`` made any non-zero exit catastrophic. So the
+         valid VTTs were thrown away on a transient rate-limit error.
+
+    The new strategy walks a small list of language variants, one at a
+    time, and stops at the first one that lands a VTT. yt-dlp's exit
+    code is treated as advisory — if a VTT was written, we use it; if
+    it wasn't, we move on to the next variant. Net result: we make
+    exactly enough calls to find one working transcript.
+    """
     out_template = str(work_dir / "subs.%(ext)s")
-    subprocess.run(
-        [
-            "yt-dlp",
-            "--write-auto-subs",
-            "--sub-langs",
-            f"{language}.*,{language}",
-            "--sub-format",
-            "vtt",
-            "--skip-download",
-            "--no-warnings",
-            "-o",
-            out_template,
-            url,
-        ],
-        check=True,
-        stderr=subprocess.PIPE,
+
+    # Variants to try, in preference order. ``-orig`` is YouTube's tag for
+    # the original-language track (creator-uploaded OR auto-generated in
+    # the speaker's language). PT-BR comes before PT-PT because Brazilian
+    # Portuguese is the dominant variant in sermons going through this
+    # pipeline; if neither's tagged, the unlocalized ``language`` itself
+    # catches whatever YouTube has.
+    variants = [
+        f"{language}-orig",
+        f"{language}-BR",
+        language,
+        f"{language}-PT",
+    ]
+
+    errors: list[str] = []
+    for variant in variants:
+        # Drop any leftover VTTs from a prior variant attempt so glob() can
+        # uniquely identify what *this* call produced.
+        for stale in work_dir.glob("*.vtt"):
+            stale.unlink()
+
+        proc = subprocess.run(
+            [
+                "yt-dlp",
+                "--write-auto-subs",
+                "--sub-langs",
+                variant,
+                "--sub-format",
+                "vtt",
+                "--skip-download",
+                "--no-warnings",
+                "-o",
+                out_template,
+                url,
+            ],
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+        )
+
+        vtts = sorted(work_dir.glob("*.vtt"))
+        if vtts:
+            # File on disk wins over exit code: a non-zero return from
+            # yt-dlp at this point means a *later* sibling download failed
+            # (rate-limit, network blip), not the one we asked for here.
+            vtt = vtts[0]
+            print(
+                f"  pulled YouTube caption variant '{variant}' "
+                f"({vtt.stat().st_size // 1024} KB)",
+                file=sys.stderr,
+            )
+            raw_words = _parse_vtt_file(vtt)
+            if not raw_words:
+                # VTT existed but had no parseable cues — keep trying.
+                errors.append(f"{variant}: VTT had no parseable cues")
+                continue
+            return {
+                "words": _to_scribe_shape(raw_words),
+                "language": language,
+                "_provider": "youtube-vtt",
+                "_caption_variant": variant,
+            }
+
+        # No VTT written. Capture yt-dlp's stderr tail so the eventual
+        # error message tells the user *why* nothing came through.
+        stderr_tail = (proc.stderr.decode("utf-8", "replace") if proc.stderr else "")[-300:]
+        errors.append(f"{variant}: exit={proc.returncode} {stderr_tail.strip()[-200:]}")
+
+    # All variants failed — surface the collected errors so the user can
+    # see whether it's a missing-captions issue or a yt-dlp / network one.
+    raise RuntimeError(
+        "no YouTube captions could be pulled for this video.\n"
+        + "tried variants in order:\n"
+        + "\n".join(f"  - {e}" for e in errors)
+        + "\n\nIf the video genuinely has no captions, re-run with "
+        "--provider=local (faster-whisper, offline) or --provider=groq "
+        "(needs GROQ_API_KEY)."
     )
-    vtt_candidates = sorted(work_dir.glob("*.vtt"))
-    if not vtt_candidates:
-        raise RuntimeError(f"no VTT auto-captions returned by yt-dlp for {url}")
-    vtt = vtt_candidates[0]
-    print(f"  parsed VTT: {vtt.name}", file=sys.stderr)
-    raw_words = _parse_vtt_file(vtt)
-    return {
-        "words": _to_scribe_shape(raw_words),
-        "language": language,
-        "_provider": "youtube-vtt",
-    }
 
 
 # ─── Groq provider ─────────────────────────────────────────────────────────
@@ -356,50 +425,41 @@ def _to_scribe_shape(raw_words: list[dict]) -> list[dict]:
 # ─── main ──────────────────────────────────────────────────────────────────
 
 
-_LOCAL_WHISPER_MAX_DURATION_S = 20 * 60
-"""``local`` provider is acceptable for sermons under this duration.
-Longer videos shift the default toward cloud/VTT providers because local
-inference scales linearly with audio length and CPU-bound runs of
-faster-whisper on a 60-minute sermon can take 30-90 minutes on a laptop
-without a GPU — slower than the cloud round-trip even at free-tier
-rate limits. Override with ``--provider=local`` to force it anyway."""
-
-
 def _auto_pick_provider(meta: dict) -> str:
     """Provider selection when --provider isn't passed.
 
-    Order of preference balances *best available quality* against *time to
-    first transcript* — a 60-minute sermon should not silently kick off a
-    half-hour local Whisper job when YouTube auto-captions would land in
-    3 seconds. Logic:
+    Updated priority (Jun 2026): when the source is a YouTube URL, prefer
+    ``youtube`` over ``groq``. YT's own auto-captions are free, instant,
+    and accurate enough for sermon cuts (the scrub step catches the
+    dropped-word errors). Sending the audio back through Groq Whisper is
+    wasted spend and round-trip latency when YouTube already has a
+    transcript right there. Groq stays the preferred provider for local
+    files where there's no YT track to pull from.
 
-      1. ``groq``    — if GROQ_API_KEY is exported or in ~/.env (best
-                       accuracy, fast, cloud — user opted in explicitly).
-      2. ``youtube`` — if source is a YouTube URL AND the video is longer
-                       than _LOCAL_WHISPER_MAX_DURATION_S. Trades accuracy
-                       for speed on long content; the scrub step + manual
-                       review catch the dropped-word errors VTT makes.
-      3. ``local``   — if faster-whisper imports successfully. Offline,
+    Order:
+      1. ``youtube`` — source is a YouTube URL. Free, fast, good enough.
+                       Even short YT videos prefer this path now.
+      2. ``groq``    — GROQ_API_KEY is set AND source isn't YouTube (or
+                       --provider=groq was passed explicitly). Best
+                       accuracy on local recordings.
+      3. ``local``   — faster-whisper imports successfully. Offline,
                        premium quality, but slow for long inputs on CPU.
-      4. ``youtube`` — short video with no Groq key, faster-whisper not
-                       installed; fall back to auto-captions.
-      5. error       — local source < threshold, no Groq, no faster-whisper.
+      4. error       — no providers available.
 
-    Doctor reports which path is active. Override with --provider= at any
-    time to bypass this heuristic.
+    Override with --provider= at any time to bypass this heuristic.
     """
     load_env()  # populate from ~/.env so the GROQ key check is honest
+
+    is_youtube = meta.get("source_type") == "youtube" and meta.get("url")
+    if is_youtube:
+        # YouTube source → always start with its own captions. If they're
+        # missing or broken, transcribe_youtube raises with a clear error
+        # message telling the user to rerun with --provider=local or
+        # --provider=groq, so the fallback path stays explicit.
+        return "youtube"
+
     if os.environ.get("GROQ_API_KEY"):
         return "groq"
-
-    duration_s = float(meta.get("duration_s", 0) or 0)
-    is_youtube = meta.get("source_type") == "youtube" and meta.get("url")
-    long_video = duration_s > _LOCAL_WHISPER_MAX_DURATION_S
-
-    # Long YouTube videos: prefer instant auto-captions over multi-hour
-    # local Whisper runs. User can opt back into local with --provider=local.
-    if is_youtube and long_video:
-        return "youtube"
 
     try:
         import faster_whisper  # noqa: F401
@@ -407,9 +467,6 @@ def _auto_pick_provider(meta: dict) -> str:
         return "local"
     except ImportError:
         pass
-
-    if is_youtube:
-        return "youtube"
 
     fail(
         "nenhum provider de transcrição disponível",
