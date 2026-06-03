@@ -372,7 +372,21 @@ def render_cut_singlepass(
     cap = cv2.VideoCapture(str(src))
     src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"  source {src_w}x{src_h}", file=sys.stderr)
+    # CRITICAL: the source FPS drives the read loop, NOT OUT_FPS.
+    # Symptom this guards against: source at 23.976 fps + OUT_FPS=30 used
+    # to make the loop read 1950 source frames (for a 65s cut) but pipe
+    # them as 30fps to ffmpeg, meaning ffmpeg saw 65s of video against
+    # 65s of audio while the video actually contained 81.3s of source
+    # content (1950/23.976) — audio drifted ahead of video at ~1.25x,
+    # producing visible desync from the first few seconds onward.
+    # The fix: read at the source's native rate, pipe at the source's
+    # native rate, then let the ffmpeg `fps={OUT_FPS}` filter handle
+    # the conversion to the output rate. ffmpeg does proper PTS-based
+    # duplication/decimation; A/V stays aligned because pts and audio
+    # share the same time base.
+    src_fps_raw = cap.get(cv2.CAP_PROP_FPS)
+    src_fps = float(src_fps_raw) if src_fps_raw and src_fps_raw > 0 else float(OUT_FPS)
+    print(f"  source {src_w}x{src_h} @ {src_fps:.3f} fps", file=sys.stderr)
 
     print(f"  pass 1: sampling face positions @ {TRK['sample_fps']} fps...", file=sys.stderr)
     samples = sample_face_positions(src, seg_start, seg_end, src_w, src_h)
@@ -426,13 +440,22 @@ def render_cut_singlepass(
             file=sys.stderr,
         )
 
-    total_frames = int(round((seg_end - seg_start) * OUT_FPS))
+    # Total frames to read from the source. MUST be computed from src_fps —
+    # using OUT_FPS here is the bug that caused A/V desync (see comment on
+    # src_fps detection above): it told the loop to read OUT_FPS×duration
+    # source frames, which on a 23.976fps source over-read content by
+    # ~25% and the resulting video raced ahead of the audio.
+    total_frames = int(round((seg_end - seg_start) * src_fps))
 
     # Build the filter graph. With an SRT we burn it on input 0; without,
     # we pass the raw frames through unchanged. ``--quality max`` also
     # inserts a light denoise + sharpen pass before the subtitles filter
     # — useful on church-camera sources where high-ISO noise mushes the
     # face and the upscale-to-1920 throws away some perceived sharpness.
+    # The fps={OUT_FPS} filter ALWAYS goes last to convert from the
+    # source's native rate (which is what we're piping in) to the
+    # canonical output rate. ffmpeg handles frame duplication/decimation
+    # via PTS, so the converted stream stays time-aligned with the audio.
     vf_chain: list[str] = []
     if quality == "max":
         # hqdn3d: motion-aware spatial+temporal denoise. Numbers are
@@ -453,8 +476,11 @@ def render_cut_singlepass(
         # those commas need to be escaped inside the filter graph.
         style_esc = FORCE_STYLE.replace(",", r"\,")
         vf_chain.append(f"subtitles={srt}:force_style='{style_esc}'")
-    # Single-quote the joined filter expression so the colon inside the
-    # subtitles filter isn't read as a filter separator.
+    # Frame-rate normalization comes last so subtitles + denoise filter
+    # on the original frames; duplication only happens at the very end.
+    # Skip when the input is already at OUT_FPS — saves the no-op pass.
+    if abs(src_fps - OUT_FPS) > 0.01:
+        vf_chain.append(f"fps={OUT_FPS}")
     vf_args: list[str] = []
     if vf_chain:
         vf_args = ["-vf", f"{','.join(vf_chain)}"]
@@ -464,7 +490,9 @@ def render_cut_singlepass(
     cmd = [
         FFMPEG,
         "-y",
-        # Input 0: raw BGR frames piped from cv2 below.
+        # Input 0: raw BGR frames piped from cv2 below, declared at the
+        # source's native rate so the fps filter (if present) sees correct
+        # timestamps for duplication / decimation.
         "-f",
         "rawvideo",
         "-pix_fmt",
@@ -472,7 +500,7 @@ def render_cut_singlepass(
         "-s",
         f"{OUT_W}x{OUT_H}",
         "-r",
-        str(OUT_FPS),
+        f"{src_fps:.6f}",
         "-i",
         "-",
         # Input 1: source video, audio segment only.
@@ -531,7 +559,13 @@ def render_cut_singlepass(
         ok, frame = cap.read()
         if not ok:
             break
-        t_abs = seg_start + fi / OUT_FPS
+        # t_abs is the source time of frame ``fi`` — must use src_fps,
+        # NOT OUT_FPS. Same root-cause family as the A/V desync bug:
+        # at 23.976 fps source with OUT_FPS=30, fi/30 underestimated
+        # the actual time by ~20%, so pos_at() interpolated the face
+        # position for a time that was always behind where the speaker
+        # actually was, producing visibly laggy tracking.
+        t_abs = seg_start + fi / src_fps
         # INTER_LANCZOS4 for the upscale (source heights are typically 1080
         # or 1440; we always scale UP to scale_h>=OUT_H=1920). The old
         # INTER_AREA was the wrong choice here — it's tuned for downscaling
